@@ -5,6 +5,7 @@
     "global_alert_channel_id": -100123456789,
     "notify_channel_id": null,
     "cmd_prefix": "-",
+    "auto_route_rules": {},
     "folder_rules": {},
     "_system_cache": {}
 }
