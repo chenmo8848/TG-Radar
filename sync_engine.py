@@ -1,6 +1,5 @@
-import os, sys, json, asyncio, logging, subprocess, html
+import os, sys, json, asyncio, logging, html
 from datetime import datetime
-from typing import Optional
 from telethon import TelegramClient, functions, types, utils
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -9,8 +8,6 @@ logger = logging.getLogger(__name__)
 WORK_DIR     = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH  = os.path.join(WORK_DIR, "config.json")
 SESSION_NAME = os.path.join(WORK_DIR, "TG_Radar_session")
-SERVICE_NAME = "tg_monitor"
-VERSION = ""
 
 def resolve_peer_id(peer) -> int:
     try:
@@ -34,11 +31,6 @@ def save_config(config_data: dict) -> None:
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(config_data, f, indent=4, ensure_ascii=False)
     os.replace(tmp_path, CONFIG_PATH)
-
-def service_stop() -> None: subprocess.run(["sudo", "systemctl", "stop", SERVICE_NAME], stderr=subprocess.DEVNULL)
-def service_start() -> None:
-    open(os.path.join(WORK_DIR, ".silent_start"), "w").close()
-    subprocess.run(["sudo", "systemctl", "start", SERVICE_NAME], stderr=subprocess.DEVNULL)
 
 def get_folder_title(folder: types.DialogFilter) -> str:
     raw = folder.title
@@ -70,7 +62,6 @@ async def send_sync_report(client, notify_channel, report, elapsed, cmd_prefix):
 <b>[ 活跃管道矩阵 ]</b>
 {active_block}
 ━━━━━━━━━━━━━━━━━━━━━
-🚀 引擎流转完毕，已完成静默热重载。
 💡 发送 <code>{html.escape(cmd_prefix)}enable &lt;管道名&gt;</code> 唤醒新节点"""
     try:
         client.parse_mode = 'html'
@@ -148,8 +139,7 @@ async def main():
     api_id, api_hash = config.get("api_id"), config.get("api_hash")
     notify_channel = config.get("notify_channel_id") or config.get("global_alert_channel_id")
     cmd_prefix = str(config.get("cmd_prefix") or "-")
-    is_chatops = '--chatops' in sys.argv
-    if not is_chatops: service_stop()
+    
     try:
         async with TelegramClient(SESSION_NAME, int(api_id), api_hash) as client:
             t0 = datetime.now()
@@ -160,7 +150,7 @@ async def main():
                 save_config(config)
             elapsed = (datetime.now() - t0).total_seconds()
             await send_sync_report(client, notify_channel, report, elapsed, cmd_prefix)
-    finally:
-        if not is_chatops: service_start()
+    except Exception as e:
+        logger.error("初始化拉取发生异常: %s", e)
 
 if __name__ == "__main__": asyncio.run(main())
