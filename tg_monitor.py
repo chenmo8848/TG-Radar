@@ -14,7 +14,6 @@ SESSION_NAME = os.path.join(WORK_DIR, "TG_Radar_session")
 SERVICE_NAME = "tg_monitor"
 MONITOR_LOG_PATH = os.path.join(WORK_DIR, "monitor.log")
 
-# 🚀 全局异步任务队列：用于后台慢速同步路由，防卡死、防API风控
 ROUTE_QUEUE = asyncio.Queue()
 
 def write_biz_log(action: str, detail: str):
@@ -216,11 +215,7 @@ async def apply_hot_reload(event, state: AppState, success_text: str, auto_delet
     final_text = f"{success_text}\n⚡ <b>策略已实时生效</b>"
     await safe_reply(event, final_text, auto_delete)
 
-# ================= 🚀 后台异步队列 Worker (慢慢同步过去) =================
 async def route_task_worker(client):
-    """
-    无情的后台同步机器：从队列拿任务，更新分组，然后慢速休眠，防死锁防风控
-    """
     while True:
         task = await ROUTE_QUEUE.get()
         try:
@@ -233,11 +228,8 @@ async def route_task_worker(client):
             write_biz_log("ERR", f"后台任务：向分组 [{task['name']}] 同步数据失败: {e}")
         finally:
             ROUTE_QUEUE.task_done()
-        
-        # ⏱️ 任务之间强制休眠 4 秒，确保 API 平滑调用，绝对不会触发限制
         await asyncio.sleep(4)
 
-# ================= 🔍 智能探测器 (只管找，找到扔给后台队列) =================
 async def auto_route_groups(client, auto_route_rules) -> dict:
     report = {"queued": {}, "missing": [], "matched_zero": [], "already_in": {}, "created": []}
     if not auto_route_rules: return report
@@ -248,9 +240,7 @@ async def auto_route_groups(client, auto_route_rules) -> dict:
         
         all_dialogs = []
         async for d in client.iter_dialogs():
-            # 🛡️ 严格只扫描群组和频道
-            if not (d.is_group or d.is_channel):
-                continue
+            if not (d.is_group or d.is_channel): continue
             name = utils.get_display_name(d.entity) or getattr(d, 'name', '') or getattr(d, 'title', '') or ''
             all_dialogs.append({'peer': utils.get_input_peer(d.entity), 'id': d.id, 'name': name})
 
@@ -269,13 +259,11 @@ async def auto_route_groups(client, auto_route_rules) -> dict:
                 report["matched_zero"].append(folder_name)
                 continue
 
-            # 动作 A：分组不存在，组建新对象扔进后台队列
             if not target_folder:
                 used_ids = [f.id for f in folders]
                 new_id = 2
                 while new_id in used_ids: new_id += 1
                 
-                # 统统加进去，不截断
                 peers_to_add = [m['peer'] for m in matched_peers_info]
                 
                 target_folder = types.DialogFilter(
@@ -290,7 +278,6 @@ async def auto_route_groups(client, auto_route_rules) -> dict:
                 )
                 
                 folders.append(target_folder)
-                # 🚀 扔给后台慢速同步
                 ROUTE_QUEUE.put_nowait({
                     'folder_id': new_id,
                     'folder_obj': target_folder,
@@ -302,7 +289,6 @@ async def auto_route_groups(client, auto_route_rules) -> dict:
                 report["queued"][folder_name] = len(peers_to_add)
                 continue
 
-            # 动作 B：分组存在，增量补充对象并扔进后台队列
             current_peer_ids = []
             if hasattr(target_folder, "include_peers"):
                 for p in target_folder.include_peers:
@@ -325,10 +311,7 @@ async def auto_route_groups(client, auto_route_rules) -> dict:
                 report["already_in"][folder_name] = already_cnt
                 continue
 
-            # 只要有匹配，直接追加，不截断！
             target_folder.include_peers.extend(to_add)
-            
-            # 🚀 扔给后台慢速同步
             ROUTE_QUEUE.put_nowait({
                 'folder_id': target_folder.id,
                 'folder_obj': target_folder,
@@ -398,7 +381,7 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             await safe_reply(event, f"""⚡ <b>TG-Radar 监控大屏</b>
 ▸ 运行时长 : <code>{fmt_uptime(state.start_time)}</code>
 ▸ 拓扑矩阵 : <code>{len(state.target_map)}</code> 节点 · <code>{enabled_cnt}</code> 管道
-▸ 智能路由 : <code>{len(state.auto_route_rules)}</code> 策略{q_info}
+▸ 智能路由 : <code>{len(state.auto_route_rules)}</code> 条策略{q_info}
 ▸ 生效策略 : <code>{state.valid_rules_count}</code> 规则
 ▸ 累计拦截 : <code>{state.total_hits}</code> 次
 ▸ 最新捕获 : {last}""", auto_delete=30)
@@ -495,16 +478,23 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
 
         elif command == "addroute":
             parts = args.split(maxsplit=1)
-            if len(parts) < 2: return await safe_reply(event, f"❓ 语法: {pe}addroute 分组名 匹配正则", 15)
-            folder_name, regex = parts[0].strip(), parts[1].strip()
+            if len(parts) < 2: return await safe_reply(event, f"❓ 语法: {pe}addroute 分组名 匹配词1 [匹配词2...]", 15)
+            folder_name, raw_pattern = parts[0].strip(), parts[1].strip()
+            
+            # 🔥 傻瓜化处理：如果用户用空格分隔，全自动转成正则的“或者”逻辑
+            if " " in raw_pattern and "|" not in raw_pattern and not raw_pattern.startswith("^"):
+                words = [re.escape(w) for w in raw_pattern.split() if w.strip()]
+                regex = "(" + "|".join(words) + ")"
+            else:
+                regex = raw_pattern
+
             try: re.compile(regex)
-            except Exception as e: return await safe_reply(event, f"❌ <b>正则编译失败</b>: {e}", 15)
+            except Exception as e: return await safe_reply(event, f"❌ <b>规则编译失败</b>: {e}", 15)
             
             def do_addroute(cfg): cfg.setdefault("auto_route_rules", {})[folder_name] = regex
             edit_config(do_addroute)
-            write_biz_log("SYS", f"挂载智能路由: {folder_name}")
+            write_biz_log("SYS", f"挂载智能路由: {folder_name} -> {regex}")
             
-            # 🔥 极速诊断，瞬间放行
             report = await auto_route_groups(client, {folder_name: regex})
             
             import sync_engine
@@ -517,14 +507,14 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
 
             msg = f"✅ <b>[ 智能路由已挂载 ]</b>\n▸ <b>目标分组</b> : <code>{html.escape(folder_name)}</code>\n\n🔍 <b>[ 队列状态 ]</b>"
             if folder_name in report["created"]:
-                msg += f"\n✨ <b>任务已创建</b>: 检测到 {report['queued'].get(folder_name,0)} 个会话，已投递至后台队列自动组建分组！"
+                msg += f"\n✨ <b>无中生有</b>: 已为您自动建组并装入 {report['queued'].get(folder_name,0)} 个会话！排队慢速同步中。"
             elif folder_name in report["matched_zero"]:
-                msg += "\n🔕 <b>零匹配</b>\n当前账号未发现任何匹配该正则的群组/频道。"
+                msg += "\n🔕 <b>零匹配</b>\n当前账号未发现任何匹配该规则的群组/频道。"
             else:
                 queued = report["queued"].get(folder_name, 0)
                 already = report["already_in"].get(folder_name, 0)
-                if queued > 0: msg += f"\n⏳ <b>任务排队中</b>: {queued} 个会话已送入后台队列，将慢慢同步至 TG 以防限制。"
-                if already > 0: msg += f" (另有 {already} 个会话已存在，自动跳过)"
+                if queued > 0: msg += f"\n⏳ <b>任务排队中</b>: {queued} 个匹配到的新群组已送入后台队列，将慢慢同步至TG以防限制。"
+                if already > 0: msg += f" (另有 {already} 个群已存在该分组，已自动跳过)"
 
             await apply_hot_reload(event, state, msg, 25)
 
@@ -538,7 +528,7 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             await apply_hot_reload(event, state, f"🗑️ <b>[ 智能路由已剔除 ]</b>\n▸ <b>解绑分组</b> : <code>{html.escape(folder_name)}</code>", 15)
 
         elif command == "sync":
-            await safe_reply(event, "🔄 <b>[ 拓扑云端全量同步 ]</b>\n> 正在扫描并投递后台队列...", auto_delete=0)
+            await safe_reply(event, "🔄 <b>[ 拓扑云端全量同步 ]</b>\n> 正在执行扫描并投递后台队列...", auto_delete=0)
             import sync_engine
             importlib.reload(sync_engine)
             cfg = _load_fresh_config()
@@ -556,12 +546,16 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
                 write_biz_log("SYNC", "触发同步：云端拓扑无实质变动")
                 
             msg = "✅ <b>全盘扫描诊断完毕</b>\n"
-            if report["queued"] or report["created"] or report["matched_zero"]:
-                msg += "\n🔀 <b>[ 后台任务投递进度 ]</b>\n"
+            msg += f"▸ 共巡检了 {len(cfg.get('auto_route_rules', {}))} 条路由规则\n"
+            
+            if report["queued"] or report["created"] or report["matched_zero"] or report["errors"]:
+                msg += "\n🔀 <b>[ 后台任务报告 ]</b>\n"
                 for fn in report["created"]: msg += f"  ▸ <code>{html.escape(fn)}</code> : ✨ 新建分组排队中\n"
-                for fn, cnt in report["queued"].items(): msg += f"  ▸ <code>{html.escape(fn)}</code> : ⏳ 补充 {cnt} 个会话排队中\n"
+                for fn, cnt in report["queued"].items(): msg += f"  ▸ <code>{html.escape(fn)}</code> : ⏳ 补充 {cnt} 个群组排队中\n"
                 for fn in report["matched_zero"]: msg += f"  ▸ <code>{html.escape(fn)}</code> : 🔍 正则零命中\n"
-            msg += "\n⚡ <b>(所有补充操作由后台慢速完成，防限制)</b>"
+                for fn, err in report["errors"].items(): msg += f"  ▸ <code>{html.escape(fn)}</code> : ❌ API更新被拒\n"
+                
+            msg += "\n⚡ <b>(所有补充操作由后台慢速完成，绝对防限制)</b>"
             await safe_reply(event, msg, 25)
 
         elif command == "update":
@@ -632,7 +626,6 @@ async def main():
     async with TelegramClient(SESSION_NAME, api_id, api_hash) as client:
         client.parse_mode = 'html'
         
-        # 🚀 启动独立后台 Worker
         asyncio.create_task(route_task_worker(client))
         
         async def internal_auto_sync():
