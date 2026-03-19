@@ -47,7 +47,7 @@ async def send_sync_report(client, notify_channel, report, elapsed, cmd_prefix):
     for name in deleted: change_lines.append(f"  🗑️ 废弃剔除 <code>{html.escape(name)}</code>")
     change_block = "\n".join(change_lines) if change_lines else "  _(无拓扑结构变更)_"
     active_lines = [f"  ✅ <code>{html.escape(name)}</code> · {cnt} 个下级节点" for name, cnt in active.items()]
-    active_block = "\n".join(active_lines) if active_lines else "  _(无活跃节点)_"
+    active_block = "\n".join(active_lines) if active_lines else "  _(无活跃管道)_"
     status_line = "🔔 <b>云端拓扑已更新并生效</b>" if changed else "✅ <b>云端拓扑无实质变动</b>"
     
     msg = f"""🔄 <b>云端拓扑同步报告</b>
@@ -59,7 +59,7 @@ async def send_sync_report(client, notify_channel, report, elapsed, cmd_prefix):
 <b>[ 拓扑变更详情 ]</b>
 {change_block}
 ━━━━━━━━━━━━━━━━━━━━━
-<b>[ 全量节点矩阵 ]</b>
+<b>[ 活跃管道矩阵 ]</b>
 {active_block}
 ━━━━━━━━━━━━━━━━━━━━━
 💡 发送 <code>{html.escape(cmd_prefix)}enable &lt;管道名&gt;</code> 唤醒新节点"""
@@ -94,7 +94,8 @@ async def sync(client: TelegramClient, config: dict) -> tuple:
             folder_rules[tg_title]["id"] = tg_id
             config_changed = True
         elif tg_title not in folder_rules:
-            folder_rules[tg_title] = {"id": tg_id, "enable": False, "alert_channel_id": None, "rules": {f"🟢 {tg_title}监控": "(示范词A|示范词B)"}}
+            # 💥 核心修复：彻底去掉了默认策略名中的 🟢 emoji 和空格，只保留纯文字
+            folder_rules[tg_title] = {"id": tg_id, "enable": False, "alert_channel_id": None, "rules": {f"{tg_title}监控": "(示范词A|示范词B)"}}
             report["discovered"].append(tg_title)
             config_changed = True
 
@@ -106,14 +107,12 @@ async def sync(client: TelegramClient, config: dict) -> tuple:
             config_changed = True
 
     new_cache = {}
-    all_dialogs = []
-    async for d in client.iter_dialogs():
-        all_dialogs.append(d)
+    all_dialogs = await client.get_dialogs(limit=None)
 
     for folder in tg_folders:
         tg_title = get_folder_title(folder)
-        
-        # 🔥 关键修复：移除了休眠组不刷缓存的漏洞，现在 100% 绝对对齐
+        folder_cfg = folder_rules.get(tg_title, {})
+        if not folder_cfg.get("enable", False): continue
         target_ids, exclude_ids = set(), set()
 
         for peer in getattr(folder, "exclude_peers", []):
