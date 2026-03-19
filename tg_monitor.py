@@ -159,7 +159,7 @@ async def send_startup_notification(client, notify_channel, state, cmd_prefix):
             enabled_cnt += 1
     folder_block = "\n".join(lines) if lines else "  <i>(暂无活跃的监听拓扑)</i>"
     
-    # 🌟 新增：构建智能路由明细区块
+    # 构建智能路由明细区块
     route_lines = []
     for f_name, pat in state.auto_route_rules.items():
         route_lines.append(f"  🔀 <code>{html.escape(f_name)}</code> : <code>{html.escape(pat)}</code>")
@@ -201,6 +201,7 @@ async def send_startup_notification(client, notify_channel, state, cmd_prefix):
         except: pass
         
     if msg_obj:
+        # 重启后接手的上线通知也会彻底进入 60s 倒计时销毁机制
         asyncio.create_task(schedule_delete(msg_obj, 60))
 
 def edit_config(modifier_fn) -> tuple:
@@ -434,8 +435,8 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             await apply_hot_reload(event, state, f"🗑️ <b>[ 智能路由已剔除 ]</b>\n▸ <b>解绑分组</b> : <code>{html.escape(folder_name)}</code>", 15)
 
         elif command == "sync":
-            try: await event.edit("🔄 <b>[ 拓扑云端全量同步 ]</b>\n> 正在执行热重载...")
-            except: await event.reply("🔄 <b>[ 拓扑云端全量同步 ]</b>\n> 正在执行热重载...")
+            # 统一同步指令，直接进行编辑替换
+            await safe_reply(event, "🔄 <b>[ 拓扑云端全量同步 ]</b>\n> 正在执行热重载...", auto_delete=0)
             import sync_engine
             importlib.reload(sync_engine)
             cfg = _load_fresh_config()
@@ -448,23 +449,28 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
                 write_biz_log("SYNC", "手动触发同步：拓扑已更新并热重载")
             else:
                 write_biz_log("SYNC", "手动触发同步：云端拓扑无实质变动")
+            # 再次编辑：替换为成功信息，并挂上阅后即焚
             await safe_reply(event, "✅ <b>拓扑云端同步完成</b>\n⚡ <b>策略已实时生效</b>", 15)
 
         elif command == "update":
-            reply_msg = await event.reply("🔄 <b>[ OTA 固件拉取更新 ]</b>\n> 正在从主分支同步原生代码...")
+            # 恢复原汁原味的 Edit 原位编辑逻辑，0 代表暂时不自动删，交给重启后的守护进程处理
+            reply_msg = await safe_reply(event, "🔄 <b>[ OTA 固件拉取更新 ]</b>\n> 正在从主分支同步原生代码...", auto_delete=0)
             write_biz_log("SYS", "触发 OTA 固件拉取更新")
-            with open(os.path.join(WORK_DIR, ".last_msg"), "w") as f:
-                json.dump({"chat_id": event.chat_id, "msg_id": reply_msg.id, "action": "update"}, f)
+            if reply_msg:
+                with open(os.path.join(WORK_DIR, ".last_msg"), "w") as f:
+                    json.dump({"chat_id": event.chat_id, "msg_id": reply_msg.id, "action": "update"}, f)
             await asyncio.sleep(1)
             cmd = f"curl -fsSL https://github.com/chenmo8848/TG-Radar/archive/refs/heads/main.zip -o /tmp/tgr.zip && unzip -q -o /tmp/tgr.zip -d /tmp/ && cp -af /tmp/TG-Radar-main/. {WORK_DIR}/ && rm -rf /tmp/tgr.zip /tmp/TG-Radar-main && curl -fsSL https://api.github.com/repos/chenmo8848/TG-Radar/commits/main | python3 -c \"import sys,json; print(json.load(sys.stdin).get('sha',''))\" > {WORK_DIR}/.commit_sha"
             subprocess.run(cmd, shell=True)
             subprocess.Popen(["sudo", "systemctl", "restart", SERVICE_NAME])
 
         elif command == "restart":
-            reply_msg = await event.reply("🔄 <b>[ 物理级系统重启 ]</b>\n正在通过 Systemd 重载守护进程...")
+            # 同理，执行原地替换编辑
+            reply_msg = await safe_reply(event, "🔄 <b>[ 物理级系统重启 ]</b>\n正在通过 Systemd 重载守护进程...", auto_delete=0)
             write_biz_log("SYS", "触发守护进程重启")
-            with open(os.path.join(WORK_DIR, ".last_msg"), "w") as f:
-                json.dump({"chat_id": event.chat_id, "msg_id": reply_msg.id, "action": "restart"}, f)
+            if reply_msg:
+                with open(os.path.join(WORK_DIR, ".last_msg"), "w") as f:
+                    json.dump({"chat_id": event.chat_id, "msg_id": reply_msg.id, "action": "restart"}, f)
             await asyncio.sleep(1.5)
             subprocess.Popen(["sudo", "systemctl", "restart", SERVICE_NAME])
 
