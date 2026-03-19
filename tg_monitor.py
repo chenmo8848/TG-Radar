@@ -253,14 +253,14 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             try: await _respond(event, f"❌ <b>内部异常</b>：<code>{html.escape(str(exc))}</code>", 15)
             except: pass
 
-    async def _dispatch(event, command: str, args: str):
+async def _dispatch(event, command: str, args: str):
         if command == "help":
             await _respond(event, f"""🤖 <b>TG-Radar 极客控制台</b>
 
 <b>[ 态势观测 ]</b>
 <code>{p}ping</code> 引擎心跳
 <code>{p}status</code> 监控大屏
-<code>{p}log [行数]</code> 核心日志
+<code>{p}log 20</code> 查看最近20行日志
 
 <b>[ 策略调度 ]</b>
 <code>{p}folders</code> 活跃管道
@@ -268,7 +268,7 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
 <code>{p}enable 分组名</code> 唤醒管道
 <code>{p}disable 分组名</code> 休眠管道
 <code>{p}addrule 分组名 规则名 正则</code> 挂载规则
-<code>{p}delrule 分组名 规则名 [正则]</code> 剔除规则
+<code>{p}delrule 分组名 规则名 正则</code> 剔除规则
 
 <b>[ 智能路由 ]</b>
 <code>{p}routes</code> 路由矩阵
@@ -276,11 +276,11 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
 <code>{p}delroute 分组名</code> 删除路由
 
 <b>[ 系统指令 ]</b>
-<code>{p}sync</code> 云端同步(推荐加群后使用)
-<code>{p}update</code> OTA更新代码
-<code>{p}restart</code> 物理重启引擎
+<code>{p}sync</code> 云端同步
+<code>{p}update</code> OTA更新
+<code>{p}restart</code> 重启引擎
 
-💡 <i>注：所有的控制台面板回显均会在倒计时结束后自动无痕销毁。</i>""", auto_delete=45)
+💡 <i>注：所有面板均在 45s 内自动无痕销毁。</i>""", auto_delete=45)
             
         elif command == "ping": 
             await _respond(event, f"🟢 <b>SYS.PING</b> | UP: <code>{fmt_uptime(state.start_time)}</code> | 捕获量: <code>{state.total_hits}</code>", auto_delete=10)
