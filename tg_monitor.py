@@ -80,7 +80,6 @@ def _load_fresh_config() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f: return json.load(f)
 
 def _save_config(cfg: dict) -> None:
-    # 💡 每次保存配置时强行注入中文说明，彻底告别参数看不懂的痛点
     desc_cfg = {
         "_说明_1": "👇【核心通信凭证】前往 my.telegram.org 获取，切勿泄露",
         "api_id": cfg.get("api_id", 1234567),
@@ -137,7 +136,6 @@ def build_msg_link(chat, chat_id: int, msg_id: int) -> str:
     return ""
 
 async def send_startup_notification(client, notify_channel, state, cmd_prefix):
-    # 全面优化上线的视觉排版，与极客控制台保持完全统一
     lines = []
     for name, cfg in state.folder_rules.items():
         if cfg.get("enable", False):
@@ -175,7 +173,6 @@ async def send_startup_notification(client, notify_channel, state, cmd_prefix):
         try: msg_obj = await client.send_message(target, msg, link_preview=False)
         except: pass
         
-    # 上线通知也会在 60 秒后自动销毁，彻底保证面板清爽
     if msg_obj:
         asyncio.create_task(schedule_delete(msg_obj, 60))
 
@@ -234,6 +231,7 @@ async def auto_route_groups(client, auto_route_rules) -> bool:
         logger.error("智能路由巡检异常: %s", e)
         return False
 
+# ================= 核心修复区：严格对齐嵌套层级 =================
 def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> None:
     p = cmd_prefix
     pe = html.escape(p)
@@ -243,12 +241,12 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
     async def control_panel(event):
         command = event.pattern_match.group(1).lower()
         args = (event.pattern_match.group(2) or "").strip()
-        try: await _dispatch(event, command, args)
+        try:
+            await _dispatch(event, command, args)
         except Exception as exc:
             try: await safe_reply(event, f"❌ <b>内部异常</b>：<code>{html.escape(str(exc))}</code>", 15)
             except: pass
 
-    # 修复缩进：将其重新放回 register_handlers 内部，对齐 4 个空格
     async def _dispatch(event, command: str, args: str):
         if command == "help":
             await safe_reply(event, f"""🤖 <b>TG-Radar 极客控制台</b>
@@ -449,7 +447,6 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             await asyncio.sleep(1.5)
             subprocess.Popen(["sudo", "systemctl", "restart", SERVICE_NAME])
 
-    # 修复缩进：对齐 4 个空格
     @client.on(events.NewMessage)
     async def message_handler(event):
         try:
@@ -489,7 +486,6 @@ async def main():
     config = load_config()
     api_id, api_hash, global_alert, notify_channel, cmd_prefix, auto_route = validate_config(config)
     
-    # 每次启动强制写入中文注释，拯救配置文件可读性
     _save_config(config)
 
     state = AppState()
@@ -506,7 +502,7 @@ async def main():
                     cfg = _load_fresh_config()
                     await auto_route_groups(client, cfg.get("auto_route_rules", {}))
                     import sync_engine
-                    importlib.reload(sync_engine) # 优雅的热重载
+                    importlib.reload(sync_engine)
                     f_new, c_new, changed, _ = await sync_engine.sync(client, cfg)
                     if changed:
                         cfg["folder_rules"], cfg["_system_cache"] = f_new, c_new
