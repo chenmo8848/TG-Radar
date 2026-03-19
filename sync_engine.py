@@ -113,7 +113,7 @@ async def sync(client: TelegramClient, config: dict) -> tuple:
     for folder in tg_folders:
         tg_title = get_folder_title(folder)
         
-        # 💥 修复了核心BUG：移除了对 enable 的判断，无条件写入 _system_cache 确保对齐
+        # 🔥 关键修复：移除了休眠组不刷缓存的漏洞，现在 100% 绝对对齐
         target_ids, exclude_ids = set(), set()
 
         for peer in getattr(folder, "exclude_peers", []):
