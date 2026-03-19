@@ -14,6 +14,9 @@ SESSION_NAME = os.path.join(WORK_DIR, "TG_Radar_session")
 SERVICE_NAME = "tg_monitor"
 MONITOR_LOG_PATH = os.path.join(WORK_DIR, "monitor.log")
 
+# 🚀 全局异步任务队列：用于后台慢速同步路由，防卡死、防API风控
+ROUTE_QUEUE = asyncio.Queue()
+
 def write_biz_log(action: str, detail: str):
     time_str = datetime.now().strftime("%y-%m-%d %H:%M:%S")
     icon = {"HIT": "🎯", "SYNC": "🔄", "SYS": "⚙️", "ERR": "❌"}.get(action, "·")
@@ -213,19 +216,41 @@ async def apply_hot_reload(event, state: AppState, success_text: str, auto_delet
     final_text = f"{success_text}\n⚡ <b>策略已实时生效</b>"
     await safe_reply(event, final_text, auto_delete)
 
-# ================= 🔥 真·全自动智能路由 (支持自动创建与自动剔除) =================
+# ================= 🚀 后台异步队列 Worker (慢慢同步过去) =================
+async def route_task_worker(client):
+    """
+    无情的后台同步机器：从队列拿任务，更新分组，然后慢速休眠，防死锁防风控
+    """
+    while True:
+        task = await ROUTE_QUEUE.get()
+        try:
+            await client(functions.messages.UpdateDialogFilterRequest(
+                id=task['folder_id'],
+                filter=task['folder_obj']
+            ))
+            write_biz_log("SYS", f"后台任务：成功向 TG 分组 [{task['name']}] 补充了 {task['cnt']} 个会话")
+        except Exception as e:
+            write_biz_log("ERR", f"后台任务：向分组 [{task['name']}] 同步数据失败: {e}")
+        finally:
+            ROUTE_QUEUE.task_done()
+        
+        # ⏱️ 任务之间强制休眠 4 秒，确保 API 平滑调用，绝对不会触发限制
+        await asyncio.sleep(4)
+
+# ================= 🔍 智能探测器 (只管找，找到扔给后台队列) =================
 async def auto_route_groups(client, auto_route_rules) -> dict:
-    """ 全局拉取，精准对齐：无中生有自动建组，清理过期自动剔除 """
-    report = {"added": {}, "removed": {}, "missing": [], "matched_zero": [], "already_in": {}, "errors": {}, "created": []}
+    report = {"queued": {}, "missing": [], "matched_zero": [], "already_in": {}, "created": []}
     if not auto_route_rules: return report
     
     try:
         req = await client(functions.messages.GetDialogFiltersRequest())
         folders = [f for f in getattr(req, "filters", []) if isinstance(f, types.DialogFilter)]
         
-        # 1. 扫描你的全量会话记录
         all_dialogs = []
         async for d in client.iter_dialogs():
+            # 🛡️ 严格只扫描群组和频道
+            if not (d.is_group or d.is_channel):
+                continue
             name = utils.get_display_name(d.entity) or getattr(d, 'name', '') or getattr(d, 'title', '') or ''
             all_dialogs.append({'peer': utils.get_input_peer(d.entity), 'id': d.id, 'name': name})
 
@@ -235,77 +260,85 @@ async def auto_route_groups(client, auto_route_rules) -> dict:
 
             target_folder = next((f for f in folders if (f.title.text if hasattr(f.title, 'text') else str(f.title)) == folder_name), None)
             
-            matched_peers = []
-            matched_ids = []
-
-            # 2. 全盘匹配出应该被放进分组的会话
+            matched_peers_info = []
             for d in all_dialogs:
                 if pattern.search(d['name']):
-                    if d['id'] not in matched_ids:
-                        matched_peers.append(d['peer'])
-                        matched_ids.append(d['id'])
+                    matched_peers_info.append(d)
 
-            # 3. 截断到100个（Telegram官方的硬性上限）
-            matched_peers = matched_peers[:100]
-            matched_ids = set(matched_ids[:100])
+            if not matched_peers_info:
+                report["matched_zero"].append(folder_name)
+                continue
 
-            # 情况 A：如果您的 Telegram 里根本没有这个分组
+            # 动作 A：分组不存在，组建新对象扔进后台队列
             if not target_folder:
-                if not matched_peers:
-                    report["matched_zero"].append(folder_name)
-                    continue
-                
-                # 💥 触发全自动创建分组动作
                 used_ids = [f.id for f in folders]
                 new_id = 2
                 while new_id in used_ids: new_id += 1
+                
+                # 统统加进去，不截断
+                peers_to_add = [m['peer'] for m in matched_peers_info]
                 
                 target_folder = types.DialogFilter(
                     id=new_id,
                     title=folder_name,
                     pinned_peers=[],
-                    include_peers=matched_peers,
+                    include_peers=peers_to_add,
                     exclude_peers=[],
                     contacts=False, non_contacts=False, groups=False,
                     broadcasts=False, bots=False, exclude_muted=False,
                     exclude_read=False, exclude_archived=False
                 )
-                try:
-                    await client(functions.messages.UpdateDialogFilterRequest(id=new_id, filter=target_folder))
-                    folders.append(target_folder)
-                    report["created"].append(folder_name)
-                    report["added"][folder_name] = len(matched_peers)
-                    write_biz_log("SYS", f"智能路由：自动无中生有创建了分组 [{folder_name}] 并填入 {len(matched_peers)} 个会话")
-                except Exception as e:
-                    report["errors"][folder_name] = f"自动建组被拒绝: {e}"
+                
+                folders.append(target_folder)
+                # 🚀 扔给后台慢速同步
+                ROUTE_QUEUE.put_nowait({
+                    'folder_id': new_id,
+                    'folder_obj': target_folder,
+                    'name': folder_name,
+                    'cnt': len(peers_to_add)
+                })
+                
+                report["created"].append(folder_name)
+                report["queued"][folder_name] = len(peers_to_add)
                 continue
 
-            # 情况 B：分组已经存在，执行“绝对对齐”（自动增加新匹配的，自动剔除不匹配的）
-            old_ids = set()
-            for p in getattr(target_folder, "include_peers", []):
-                try: old_ids.add(utils.get_peer_id(p))
-                except: pass
+            # 动作 B：分组存在，增量补充对象并扔进后台队列
+            current_peer_ids = []
+            if hasattr(target_folder, "include_peers"):
+                for p in target_folder.include_peers:
+                    try: current_peer_ids.append(utils.get_peer_id(p))
+                    except: pass
+            else:
+                target_folder.include_peers = []
+
+            to_add = []
+            already_cnt = 0
+
+            for m in matched_peers_info:
+                if m['id'] not in current_peer_ids:
+                    to_add.append(m['peer'])
+                    current_peer_ids.append(m['id'])
+                else:
+                    already_cnt += 1
+
+            if not to_add:
+                report["already_in"][folder_name] = already_cnt
+                continue
+
+            # 只要有匹配，直接追加，不截断！
+            target_folder.include_peers.extend(to_add)
             
-            added_cnt = len(matched_ids - old_ids)
-            removed_cnt = len(old_ids - matched_ids)
-
-            if added_cnt == 0 and removed_cnt == 0:
-                if len(matched_peers) == 0: report["matched_zero"].append(folder_name)
-                else: report["already_in"][folder_name] = len(matched_peers)
-                continue
-
-            # 强行绝对覆盖
-            target_folder.include_peers = matched_peers
-            try:
-                await client(functions.messages.UpdateDialogFilterRequest(id=target_folder.id, filter=target_folder))
-                if added_cnt > 0: report["added"][folder_name] = added_cnt
-                if removed_cnt > 0: report["removed"][folder_name] = removed_cnt
-                write_biz_log("SYS", f"智能路由：绝对对齐了 [{folder_name}] (新增 {added_cnt} 个, 剔除 {removed_cnt} 个过期会话)")
-            except Exception as e:
-                report["errors"][folder_name] = f"覆盖对齐失败: {e}"
+            # 🚀 扔给后台慢速同步
+            ROUTE_QUEUE.put_nowait({
+                'folder_id': target_folder.id,
+                'folder_obj': target_folder,
+                'name': folder_name,
+                'cnt': len(to_add)
+            })
+            report["queued"][folder_name] = len(to_add)
 
     except Exception as e:
-        logger.error(f"智能路由引擎崩溃: {e}")
+        logger.error(f"智能路由引擎扫描崩溃: {e}")
         
     return report
 
@@ -358,10 +391,14 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
         elif command == "status":
             last = f"<code>{html.escape(state.last_hit_folder)}</code> ({fmt_dt(state.last_hit_time)})" if state.last_hit_time else "暂无记录"
             enabled_cnt = sum(1 for cfg in state.folder_rules.values() if cfg.get("enable", False))
+            
+            queue_size = ROUTE_QUEUE.qsize()
+            q_info = f" · ⏳ {queue_size} 个同步任务排队中" if queue_size > 0 else ""
+            
             await safe_reply(event, f"""⚡ <b>TG-Radar 监控大屏</b>
 ▸ 运行时长 : <code>{fmt_uptime(state.start_time)}</code>
 ▸ 拓扑矩阵 : <code>{len(state.target_map)}</code> 节点 · <code>{enabled_cnt}</code> 管道
-▸ 智能路由 : <code>{len(state.auto_route_rules)}</code> 条策略
+▸ 智能路由 : <code>{len(state.auto_route_rules)}</code> 策略{q_info}
 ▸ 生效策略 : <code>{state.valid_rules_count}</code> 规则
 ▸ 累计拦截 : <code>{state.total_hits}</code> 次
 ▸ 最新捕获 : {last}""", auto_delete=30)
@@ -467,10 +504,9 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             edit_config(do_addroute)
             write_biz_log("SYS", f"挂载智能路由: {folder_name}")
             
-            # 🔥 触发即时全方位诊断！
+            # 🔥 极速诊断，瞬间放行
             report = await auto_route_groups(client, {folder_name: regex})
             
-            # 立即拉取并覆盖底层缓存，消除“对齐但不生效”的死循环漏洞
             import sync_engine
             importlib.reload(sync_engine)
             cfg = _load_fresh_config()
@@ -479,25 +515,16 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             _save_config(cfg)
             state.hot_reload(f_new, c_new, cfg.get("auto_route_rules", {}))
 
-            msg = f"✅ <b>[ 智能路由已挂载 ]</b>\n▸ <b>目标分组</b> : <code>{html.escape(folder_name)}</code>\n\n🔍 <b>[ 立即执行诊断报告 ]</b>"
-            
+            msg = f"✅ <b>[ 智能路由已挂载 ]</b>\n▸ <b>目标分组</b> : <code>{html.escape(folder_name)}</code>\n\n🔍 <b>[ 队列状态 ]</b>"
             if folder_name in report["created"]:
-                msg += f"\n✨ <b>无中生有</b>: TG中原无此分组，已为您自动建组并装入 {report['added'].get(folder_name,0)} 个会话！"
+                msg += f"\n✨ <b>任务已创建</b>: 检测到 {report['queued'].get(folder_name,0)} 个会话，已投递至后台队列自动组建分组！"
             elif folder_name in report["matched_zero"]:
-                msg += "\n🔕 <b>零匹配</b>\n您的账号目前没有加入任何精准匹配该正则的会话。"
-            elif folder_name in report["errors"]:
-                msg += f"\n❌ <b>API 更新被拒</b>\nTG官方拒绝了操作: <code>{html.escape(report['errors'][folder_name])}</code>"
+                msg += "\n🔕 <b>零匹配</b>\n当前账号未发现任何匹配该正则的群组/频道。"
             else:
-                added = report["added"].get(folder_name, 0)
-                removed = report["removed"].get(folder_name, 0)
+                queued = report["queued"].get(folder_name, 0)
                 already = report["already_in"].get(folder_name, 0)
-                if added > 0 or removed > 0:
-                    msg += f"\n🔀 <b>绝对对齐成功</b>:"
-                    if added > 0: msg += f"\n  ➕ 新增收纳 {added} 个匹配会话"
-                    if removed > 0: msg += f"\n  ➖ 自动清理 {removed} 个不匹配或过期的会话"
-                    msg += f"\n  📊 分组当前总会话数: {added + already} 个"
-                else:
-                    msg += f"\n✅ <b>无需操作</b>: 匹配到的 {already} 个会话都已经安安稳稳地躺在该分组里了。"
+                if queued > 0: msg += f"\n⏳ <b>任务排队中</b>: {queued} 个会话已送入后台队列，将慢慢同步至 TG 以防限制。"
+                if already > 0: msg += f" (另有 {already} 个会话已存在，自动跳过)"
 
             await apply_hot_reload(event, state, msg, 25)
 
@@ -511,7 +538,7 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             await apply_hot_reload(event, state, f"🗑️ <b>[ 智能路由已剔除 ]</b>\n▸ <b>解绑分组</b> : <code>{html.escape(folder_name)}</code>", 15)
 
         elif command == "sync":
-            await safe_reply(event, "🔄 <b>[ 拓扑云端全量同步 ]</b>\n> 正在执行地毯式扫描与动态裁切...", auto_delete=0)
+            await safe_reply(event, "🔄 <b>[ 拓扑云端全量同步 ]</b>\n> 正在扫描并投递后台队列...", auto_delete=0)
             import sync_engine
             importlib.reload(sync_engine)
             cfg = _load_fresh_config()
@@ -523,20 +550,18 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             _save_config(cfg)
             state.hot_reload(f_new, c_new, cfg.get("auto_route_rules", {}))
             
-            if has_changes or report["added"] or report["removed"] or report["created"]:
-                write_biz_log("SYNC", "触发同步：拓扑与路由双向对齐完毕")
+            if has_changes or report["queued"] or report["created"]:
+                write_biz_log("SYNC", "触发同步：发现新变动，已送入后台队列处理")
             else:
                 write_biz_log("SYNC", "触发同步：云端拓扑无实质变动")
                 
-            msg = "✅ <b>全量云端对齐完毕</b>\n"
-            if report["added"] or report["removed"] or report["created"] or report["errors"] or report["matched_zero"]:
-                msg += "\n🔀 <b>[ 智能路由裁切报告 ]</b>\n"
-                for fn in report["created"]: msg += f"  ▸ <code>{html.escape(fn)}</code> : ✨ 无中生有建组\n"
-                for fn, cnt in report["added"].items(): msg += f"  ▸ <code>{html.escape(fn)}</code> : ➕ 新收纳 {cnt} 个会话\n"
-                for fn, cnt in report["removed"].items(): msg += f"  ▸ <code>{html.escape(fn)}</code> : ➖ 清理 {cnt} 个过期会话\n"
+            msg = "✅ <b>全盘扫描诊断完毕</b>\n"
+            if report["queued"] or report["created"] or report["matched_zero"]:
+                msg += "\n🔀 <b>[ 后台任务投递进度 ]</b>\n"
+                for fn in report["created"]: msg += f"  ▸ <code>{html.escape(fn)}</code> : ✨ 新建分组排队中\n"
+                for fn, cnt in report["queued"].items(): msg += f"  ▸ <code>{html.escape(fn)}</code> : ⏳ 补充 {cnt} 个会话排队中\n"
                 for fn in report["matched_zero"]: msg += f"  ▸ <code>{html.escape(fn)}</code> : 🔍 正则零命中\n"
-                for fn, err in report["errors"].items(): msg += f"  ▸ <code>{html.escape(fn)}</code> : ❌ API更新被拒\n"
-            msg += "\n⚡ <b>系统底层监听缓存已 100% 同步</b>"
+            msg += "\n⚡ <b>(所有补充操作由后台慢速完成，防限制)</b>"
             await safe_reply(event, msg, 25)
 
         elif command == "update":
@@ -607,6 +632,9 @@ async def main():
     async with TelegramClient(SESSION_NAME, api_id, api_hash) as client:
         client.parse_mode = 'html'
         
+        # 🚀 启动独立后台 Worker
+        asyncio.create_task(route_task_worker(client))
+        
         async def internal_auto_sync():
             while True:
                 await asyncio.sleep(1800)
@@ -616,12 +644,12 @@ async def main():
                     import sync_engine
                     importlib.reload(sync_engine)
                     f_new, c_new, changed, _ = await sync_engine.sync(client, cfg)
-                    if changed or route_report["added"] or route_report["removed"] or route_report["created"]:
+                    if changed or route_report["queued"] or route_report["created"]:
                         cfg["folder_rules"], cfg["_system_cache"] = f_new, c_new
                         _save_config(cfg)
                         state.hot_reload(f_new, c_new, cfg.get("auto_route_rules", {}))
-                        logger.info("📡 内部巡检：已同步最新路由及拓扑热重载。")
-                        write_biz_log("SYNC", "系统自动巡检：双向绝对对齐并完成热重载")
+                        logger.info("📡 内部巡检：已增补最新路由及拓扑热重载。")
+                        write_biz_log("SYNC", "系统自动巡检：增量投递路由任务并完成热重载")
                 except Exception as e:
                     logger.error("内部巡检异常: %s", e)
 
