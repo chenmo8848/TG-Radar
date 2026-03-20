@@ -254,17 +254,17 @@ class AdminApp:
         if command == "addrule":
             tokens = shlex.split(args)
             if len(tokens) < 3:
-                await self.safe_reply(event, panel("参数不足", [section("示例", [f"<code>{prefix}addrule 业务群 核心词 苹果 华为</code>"])]))
+                await self.safe_reply(event, panel("参数不足", [section("示例", [f"<code>{prefix}addrule 业务群 核心词 苹果 华为</code>", f"<code>{prefix}addrule 业务群 高危词 催收 逾期 下款 台([1-9]|一|二|三|四|五|六|七|八|九|十)</code>", f"<code>{prefix}addrule \"业务 群\" \"短语规则\" \"数据商监控\" 催收</code>"]), section("输入说明", ["· 普通词可直接空格分隔，系统会自动转成 OR 规则。", "· 带正则特征的片段会原样保留，可与普通词混合输入。", "· 含空格的分组名、规则名或短语关键词请加引号。"])]))
                 return
             folder = self.find_folder(tokens[0]) or tokens[0]
             rule_name = tokens[1]
-            pattern = normalize_pattern_from_terms(" ".join(tokens[2:]))
+            pattern = normalize_pattern_from_terms(tokens[2:])
             if self.db.get_folder(folder) is None:
                 self.db.upsert_folder(folder, None, enabled=False)
             self.db.upsert_rule(folder, rule_name, pattern)
             sync_snapshot_to_config(self.config.work_dir, self.db)
             self.db.log_event("INFO", "ADD_RULE", f"{folder}/{rule_name} -> {pattern}")
-            await self.safe_reply(event, panel("规则已保存", [section("规则详情", [bullet("分组", folder), bullet("规则名", rule_name), bullet("表达式", pattern)])], "<i>如需让该分组立即参与监听，请确认分组处于开启状态。</i>"))
+            await self.safe_reply(event, panel("规则已保存", [section("规则详情", [bullet("分组", folder), bullet("规则名", rule_name), bullet("表达式", pattern)]), section("写法说明", ["· 普通词已自动归一化为 OR 表达式。", "· 正则片段会原样保留，并与普通词一起写入 config.json。"])], "<i>如需让该分组立即参与监听，请确认分组处于开启状态。</i>"))
             return
 
         if command == "delrule":
@@ -312,17 +312,17 @@ class AdminApp:
         if command == "addroute":
             tokens = shlex.split(args)
             if len(tokens) < 2:
-                await self.safe_reply(event, panel("参数不足", [section("示例", [f"<code>{prefix}addroute 业务群 供需 担保</code>"])]))
+                await self.safe_reply(event, panel("参数不足", [section("示例", [f"<code>{prefix}addroute 业务群 供需 担保</code>", f"<code>{prefix}addroute 业务群 \"精品 群\" 台([1-9]|一|二|三)</code>"]), section("输入说明", ["· 路由规则与监控规则相同，支持普通词与正则片段混写。", "· 含空格的短语请使用引号。"])]))
                 return
             folder = self.find_folder(tokens[0]) or tokens[0]
             if self.db.get_folder(folder) is None:
                 self.db.upsert_folder(folder, None, enabled=False)
                 self.db.upsert_rule(folder, f"{folder}监控", "(示范词A|示范词B)")
-            pattern = normalize_pattern_from_terms(" ".join(tokens[1:]))
+            pattern = normalize_pattern_from_terms(tokens[1:])
             self.db.set_route(folder, pattern)
             sync_snapshot_to_config(self.config.work_dir, self.db)
             self.db.log_event("INFO", "ADD_ROUTE", f"{folder} -> {pattern}")
-            await self.safe_reply(event, panel("自动收纳规则已保存", [section("规则详情", [bullet("分组", folder), bullet("路由表达式", pattern)])], "<i>后续自动同步会持续扫描新群，并把命中的目标加入路由补群队列。</i>"))
+            await self.safe_reply(event, panel("自动收纳规则已保存", [section("规则详情", [bullet("分组", folder), bullet("路由表达式", pattern)]), section("写法说明", ["· 普通词会自动归一化为 OR 表达式。", "· 正则片段会原样保留并参与后续自动收纳扫描。"])], "<i>后续自动同步会持续扫描新群，并把命中的目标加入路由补群队列。</i>"))
             return
 
         if command == "delroute":
@@ -587,7 +587,7 @@ class AdminApp:
 
     def render_help_message(self) -> str:
         prefix = escape(self.config.cmd_prefix)
-        return panel("TG-Radar 管理面板", [section("运行状态", [f"<code>{prefix}status</code> · 详细状态面板", f"<code>{prefix}ping</code> · 快速心跳检测", f"<code>{prefix}log 30</code> · 最近运行日志", f"<code>{prefix}version</code> · 版本与部署信息", f"<code>{prefix}config</code> · 关键配置总览"]), section("分组与规则", [f"<code>{prefix}folders</code> · 查看全部 TG 分组", f"<code>{prefix}rules 分组名</code> · 查看分组规则", f"<code>{prefix}enable 分组名</code> · 开启监控", f"<code>{prefix}disable 分组名</code> · 关闭监控", f"<code>{prefix}addrule 分组 规则名 关键词...</code>", f"<code>{prefix}delrule 分组 规则名 [关键词...]</code>"]), section("自动收纳", [f"<code>{prefix}routes</code> · 查看路由规则", f"<code>{prefix}addroute 分组 匹配词...</code>", f"<code>{prefix}delroute 分组</code>"]), section("系统维护", [f"<code>{prefix}sync</code> · 强制执行一次同步", f"<code>{prefix}setnotify ID/off</code> · 设置通知频道", f"<code>{prefix}setalert ID/off</code> · 设置默认告警", f"<code>{prefix}setprefix 新前缀</code> · 修改前缀", f"<code>{prefix}update</code> · 更新并重启", f"<code>{prefix}restart</code> · 直接重启双服务"])], "<i>面板会优先编辑原命令消息，并在设定时间后自动回收，尽量减少 Saved Messages 的刷屏感。</i>")
+        return panel("TG-Radar 管理面板", [section("运行状态", [f"<code>{prefix}status</code> · 详细状态面板", f"<code>{prefix}ping</code> · 快速心跳检测", f"<code>{prefix}log 30</code> · 最近运行日志", f"<code>{prefix}version</code> · 版本与部署信息", f"<code>{prefix}config</code> · 关键配置总览"]), section("分组与规则", [f"<code>{prefix}folders</code> · 查看全部 TG 分组", f"<code>{prefix}rules 分组名</code> · 查看分组规则", f"<code>{prefix}enable 分组名</code> · 开启监控", f"<code>{prefix}disable 分组名</code> · 关闭监控", f"<code>{prefix}addrule 分组 规则名 关键词...</code> · 支持普通词 + 正则混写", f"<code>{prefix}delrule 分组 规则名 [关键词...]</code>"]), section("自动收纳", [f"<code>{prefix}routes</code> · 查看路由规则", f"<code>{prefix}addroute 分组 匹配词...</code> · 支持普通词 + 正则混写", f"<code>{prefix}delroute 分组</code>"]), section("系统维护", [f"<code>{prefix}sync</code> · 强制执行一次同步", f"<code>{prefix}setnotify ID/off</code> · 设置通知频道", f"<code>{prefix}setalert ID/off</code> · 设置默认告警", f"<code>{prefix}setprefix 新前缀</code> · 修改前缀", f"<code>{prefix}update</code> · 更新并重启", f"<code>{prefix}restart</code> · 直接重启双服务"])], "<i>面板会优先编辑原命令消息，并在设定时间后自动回收，尽量减少 Saved Messages 的刷屏感。</i>")
 
     def render_config_message(self) -> str:
         notify_target = self.config.notify_channel_id if self.config.notify_channel_id is not None else "Saved Messages"

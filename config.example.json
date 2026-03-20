@@ -16,9 +16,10 @@
     "notify_auto_delete_seconds": 90,
     "recycle_fallback_command_seconds": 8,
     "repo_url": "https://github.com/chenmo8848/TG-Radar.git",
-    "_说明_05": "【自动收纳规则】推荐通过 Telegram 命令维护，例如 -addroute / -delroute。",
+    "_说明_05": "【自动收纳规则】推荐通过 Telegram 命令维护，例如 -addroute / -delroute。普通词可空格分隔，系统会自动转成 OR；正则片段会原样保留。",
     "auto_route_rules": {},
-    "_说明_06": "【系统生成区域】运行后会自动回写分组规则与缓存，不建议直接人工修改。",
+    "_说明_06": "【监控规则写法】通过 -addrule 录入时，普通词可直接空格分隔；含空格的短语请用引号；像 台([1-9]|一|二|三) 这样的正则片段会直接写入。",
     "folder_rules": {},
-    "_system_cache": {}
+    "_system_cache": {},
+    "_说明_07": "【系统生成区域】运行后会自动回写分组规则与缓存，不建议直接人工修改。"
 }

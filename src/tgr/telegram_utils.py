@@ -6,6 +6,8 @@ from typing import Iterable, Sequence
 
 from telethon import types, utils
 
+_REGEX_HINT_CHARS = set(r"\()[]{}|.+?^$*")
+
 
 def escape(value: object) -> str:
     return html.escape(str(value))
@@ -57,31 +59,108 @@ def format_duration(seconds: float) -> str:
     return " ".join(parts) or "不足1分钟"
 
 
-def normalize_pattern_from_terms(raw: str) -> str:
-    raw = raw.strip()
-    if not raw:
+def has_regex_hint(raw: str) -> bool:
+    return any(ch in _REGEX_HINT_CHARS for ch in raw)
+
+
+def _ensure_tokens(raw: str | Sequence[str]) -> list[str]:
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        return [part.strip() for part in raw.split() if part.strip()]
+    return [str(part).strip() for part in raw if str(part).strip()]
+
+
+def normalize_pattern_from_terms(raw: str | Sequence[str]) -> str:
+    tokens = _ensure_tokens(raw)
+    if not tokens:
         raise ValueError("empty pattern")
-    regex_hint = any(ch in raw for ch in ["\\", "(", ")", "[", "]", "{", "}", "|", ".", "+", "?", "^", "$"])
-    if regex_hint:
-        return raw
-    parts = [p.strip() for p in raw.split() if p.strip()]
-    if not parts:
-        raise ValueError("empty terms")
-    return "(" + "|".join(re.escape(term) for term in parts) + ")"
+
+    normalized: list[str] = []
+    for token in tokens:
+        normalized.append(token if has_regex_hint(token) else re.escape(token))
+
+    if len(normalized) == 1:
+        token = normalized[0]
+        original = tokens[0]
+        return token if has_regex_hint(original) else f"({token})"
+
+    return "(" + "|".join(normalized) + ")"
+
+
+def split_top_level_alternation(pattern: str) -> list[str]:
+    parts: list[str] = []
+    buf: list[str] = []
+    escaped = False
+    depth_round = 0
+    depth_square = 0
+    depth_curly = 0
+
+    for ch in pattern:
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            continue
+
+        if ch == "\\":
+            buf.append(ch)
+            escaped = True
+            continue
+
+        if ch == "(":
+            depth_round += 1
+        elif ch == ")":
+            depth_round = max(0, depth_round - 1)
+        elif ch == "[":
+            depth_square += 1
+        elif ch == "]":
+            depth_square = max(0, depth_square - 1)
+        elif ch == "{":
+            depth_curly += 1
+        elif ch == "}":
+            depth_curly = max(0, depth_curly - 1)
+
+        if ch == "|" and depth_round == 0 and depth_square == 0 and depth_curly == 0:
+            part = "".join(buf).strip()
+            if part:
+                parts.append(part)
+            buf = []
+            continue
+
+        buf.append(ch)
+
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts
 
 
 def try_remove_terms_from_pattern(pattern: str, terms: Iterable[str]) -> str | None:
     pattern = pattern.strip()
     if not pattern:
         return None
+
     inner = pattern[1:-1] if pattern.startswith("(") and pattern.endswith(")") else pattern
-    tokens = [t.strip() for t in re.split(r"(?<!\\)\|", inner) if t.strip()]
-    cleaned = {t.strip() for t in terms if t.strip()}
-    left = [token for token in tokens if token not in cleaned and html.unescape(token) not in cleaned]
+    tokens = split_top_level_alternation(inner)
+
+    cleaned_terms = {t.strip() for t in terms if t.strip()}
+    normalized_plain = {re.escape(t) for t in cleaned_terms if not has_regex_hint(t)}
+
+    left: list[str] = []
+    for token in tokens:
+        token_plain = html.unescape(token)
+        if token in cleaned_terms or token_plain in cleaned_terms:
+            continue
+        if token in normalized_plain or token_plain in normalized_plain:
+            continue
+        left.append(token)
+
     if not left:
         return None
     if len(left) == 1:
-        return left[0]
+        only = left[0]
+        return only if has_regex_hint(only) else f"({only})"
     return "(" + "|".join(left) + ")"
 
 
