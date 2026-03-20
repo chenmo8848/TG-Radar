@@ -189,8 +189,10 @@ _deploy() {
     _step 1 "安装基础依赖包" bash -c "apt-get update -y >/dev/null && apt-get install -y python3 python3-venv python3-pip cron >/dev/null"
     _step 2 "创建应用目录" bash -c "mkdir -p '$APP_DIR'; chmod +x '$APP_DIR/deploy.sh'"
     _step 3 "配置 Python 运行环境" bash -c "cd '$APP_DIR'; [ ! -d venv ] && python3 -m venv venv; ./venv/bin/pip install --upgrade pip >/dev/null; ./venv/bin/pip install telethon requests >/dev/null"
+    
+    # 💎 此处加入了 TimeoutStopSec=300，勒令 Linux 内核给我们的队列 5 分钟时间慢慢跑完，绝对禁止乱杀进程
     _step 4 "注册后台守护服务" bash -c "
-        printf '[Unit]\nDescription=TG-Radar Service\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=$APP_DIR\nExecStart=$PY $MON_BIN\nRestart=always\nRestartSec=5\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\n' > '$SVC_FILE'
+        printf '[Unit]\nDescription=TG-Radar Service\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=$APP_DIR\nExecStart=$PY $MON_BIN\nRestart=always\nRestartSec=5\nTimeoutStopSec=300\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\n' > '$SVC_FILE'
         systemctl daemon-reload && systemctl enable '$SVC' >/dev/null 2>&1
     "
     _step 5 "注册 TGR 全局命令" bash -c "
@@ -356,7 +358,6 @@ PYEOF3
     _i "正在为您保存配置文件..."
     echo "$_json" > /tmp/_tgr_data.json
     
-    # 🚨 此处已彻底剔除旧版带 🟢 emoji 的病灶，保证初始化即纯净规范！
     python3 - << PYEOF7
 import json, os
 data = json.load(open('/tmp/_tgr_data.json', encoding='utf-8'))
