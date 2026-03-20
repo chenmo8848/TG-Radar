@@ -1,4 +1,4 @@
-import os, re, sys, json, asyncio, logging, subprocess, html, importlib, signal
+import os, re, sys, json, asyncio, logging, subprocess, html, importlib, signal, fcntl
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -13,9 +13,20 @@ CONFIG_PATH = os.path.join(WORK_DIR, "config.json")
 SESSION_NAME = os.path.join(WORK_DIR, "TG_Radar_session")
 SERVICE_NAME = "tg_monitor"
 MONITOR_LOG_PATH = os.path.join(WORK_DIR, "monitor.log")
+LOCK_FILE_PATH = os.path.join(WORK_DIR, "tg_monitor.lock")
 
 ROUTE_QUEUE = asyncio.Queue()
 SYNC_LOCK = asyncio.Lock()  
+
+def acquire_process_lock():
+    """🛡️ 物理级进程互斥锁：确保全局永远只有一个 TG-Radar 在运行"""
+    global _process_lock_file
+    _process_lock_file = open(LOCK_FILE_PATH, 'w')
+    try:
+        fcntl.flock(_process_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, IOError):
+        print("\n🚨 [致命拦截] 检测到已有 TG-Radar 进程在后台运行！为防止重复报警，当前多余进程已自动销毁。\n")
+        os._exit(1)
 
 def get_mem_usage() -> str:
     try:
@@ -646,8 +657,6 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             if not msg_text: return
             
             chat, chat_title, sender_name, sender_loaded = None, "", "", False
-            
-            # 🔥 防止同一条消息发 3 遍的强力熔断机制 🔥
             already_alerted = False
             
             for task in state.target_map[event.chat_id]:
@@ -684,8 +693,6 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
                         state.last_hit_folder = task["folder_name"]
                         state.last_hit_time = datetime.now()
                         write_biz_log("HIT", f"拦截到了: {match.group(0)} | 来源群组: {chat_title}")
-                        
-                        # 标记已发报警，强行阻断其它匹配
                         already_alerted = True
                     except: pass
                     break
@@ -693,6 +700,7 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             logger.error("消息处理发生错误: %s", e)
 
 async def main():
+    acquire_process_lock()
     config = load_config()
     api_id, api_hash, global_alert, notify_channel, cmd_prefix, auto_route = validate_config(config)
     _save_config(config)
