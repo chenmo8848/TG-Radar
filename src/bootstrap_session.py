@@ -24,10 +24,9 @@ async def main() -> None:
     temp_session = config.sessions_dir / "tg_radar_bootstrap"
 
     print("\nTG-Radar 首次授权向导")
-    print("-" * 60)
+    print("─" * 64)
     print("接下来 Telethon 会要求输入手机号、登录验证码，以及二步验证密码（如已开启）。")
-    print("授权完成后，Admin / Core 双服务都会直接复用生成的 session。")
-    print("如果你只是重新登录，不需要手动改任何配置文件。\n")
+    print("授权完成后，Admin / Core 会直接复用生成的 session，不需要你再手工复制或编辑配置文件。\n")
 
     async with TelegramClient(str(temp_session), config.api_id, config.api_hash) as client:
         await client.start()
@@ -40,12 +39,7 @@ async def main() -> None:
     for target in [config.admin_session.with_suffix(".session"), config.core_session.with_suffix(".session")]:
         shutil.copy2(source, target)
 
-    for leftover in [
-        source,
-        temp_session.with_suffix(".session-journal"),
-        temp_session.with_suffix(".session-shm"),
-        temp_session.with_suffix(".session-wal"),
-    ]:
+    for leftover in [source, temp_session.with_suffix(".session-journal"), temp_session.with_suffix(".session-shm"), temp_session.with_suffix(".session-wal")]:
         try:
             leftover.unlink(missing_ok=True)
         except Exception:
@@ -54,7 +48,7 @@ async def main() -> None:
     print("Session 已写入：")
     print(f"- {config.admin_session.with_suffix('.session')}")
     print(f"- {config.core_session.with_suffix('.session')}")
-    print("\n授权完成。现在可以直接使用 TR 或在 Telegram 收藏夹发送命令。\n")
+    print("\n授权完成。现在可以直接使用 TR，或在 Telegram 收藏夹发送命令。\n")
 
 
 if __name__ == "__main__":

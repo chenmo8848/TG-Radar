@@ -18,7 +18,19 @@ from .config import load_config, sync_snapshot_to_config, update_config_data
 from .db import RadarDB, RouteTask
 from .logger import setup_logger
 from .sync_logic import RouteReport, SyncReport, scan_auto_routes, sync_dialog_folders
-from .telegram_utils import dialog_filter_title, format_duration, normalize_pattern_from_terms, try_remove_terms_from_pattern
+from .telegram_utils import (
+    blockquote_preview,
+    bullet,
+    dialog_filter_title,
+    escape,
+    format_duration,
+    html_code,
+    normalize_pattern_from_terms,
+    panel,
+    section,
+    shorten_path,
+    try_remove_terms_from_pattern,
+)
 from .version import __version__
 
 
@@ -91,27 +103,28 @@ class AdminApp:
                 self.db.log_event("ERROR", "COMMAND", str(exc))
                 await self.safe_reply(
                     event,
-                    f"❌ <b>TG-Radar 命令执行异常</b>\n"
-                    f"<blockquote expandable>{html.escape(str(exc))}</blockquote>\n"
-                    f"<i>已写入运行日志，可稍后在终端执行 <code>TR logs admin</code> 排查。</i>",
+                    panel(
+                        "TG-Radar 命令执行异常",
+                        [section("异常说明", [blockquote_preview(str(exc), 500)])],
+                        "<i>详细堆栈已写入 admin.log，可在终端执行 <code>TR logs admin</code> 排查。</i>",
+                    ),
                 )
 
     async def dispatch(self, event: events.NewMessage.Event, command: str, args: str) -> None:
-        prefix = html.escape(self.config.cmd_prefix)
+        prefix = escape(self.config.cmd_prefix)
 
         if command == "help":
-            await self.safe_reply(event, self.render_help_message(), auto_delete=max(60, self.config.panel_auto_delete_seconds))
+            await self.safe_reply(event, self.render_help_message(), auto_delete=max(75, self.config.panel_auto_delete_seconds))
             return
 
         if command == "ping":
             stats = self.db.get_runtime_stats()
             await self.safe_reply(
                 event,
-                "⚡ <b>TG-Radar 在线</b>\n"
-                f"· 管理层运行：<code>{html.escape(format_duration((datetime.now() - self.started_at).total_seconds()))}</code>\n"
-                f"· 历史命中：<code>{html.escape(stats.get('total_hits', '0'))}</code>\n"
-                f"· 热更新轮询：<code>{self.config.revision_poll_seconds} 秒</code>\n"
-                f"· 自动同步轮询：<code>{self.config.sync_interval_seconds} 秒</code>",
+                panel(
+                    "TG-Radar 在线心跳",
+                    [section("快速状态", [bullet("管理层运行", format_duration((datetime.now() - self.started_at).total_seconds())), bullet("历史命中", stats.get("total_hits", "0")), bullet("热更新轮询", f"{self.config.revision_poll_seconds} 秒"), bullet("自动同步", f"{self.config.sync_interval_seconds} 秒")])],
+                ),
                 auto_delete=12,
             )
             return
@@ -123,12 +136,13 @@ class AdminApp:
         if command == "version":
             await self.safe_reply(
                 event,
-                f"🧩 <b>TG-Radar 版本信息</b>\n\n"
-                f"· 版本：<code>{__version__}</code>\n"
-                f"· 架构：<code>Plan C · Admin + Core · SQLite WAL</code>\n"
-                f"· 全局命令：<code>TR</code>\n"
-                f"· 工作目录：<code>{html.escape(str(self.config.work_dir))}</code>\n"
-                f"· 会话回收：<code>编辑原消息 + 自动回收面板</code>",
+                panel(
+                    "TG-Radar 版本信息",
+                    [
+                        section("当前构建", [bullet("版本", __version__), bullet("架构", "Plan C / Admin + Core / SQLite WAL"), bullet("终端命令", "TR")]),
+                        section("部署位置", [bullet("工作目录", shorten_path(self.config.work_dir), code=False), bullet("会话策略", "编辑原消息 + 面板自动回收", code=False)]),
+                    ],
+                ),
             )
             return
 
@@ -141,12 +155,7 @@ class AdminApp:
             update_config_data(self.config.work_dir, {"notify_channel_id": value})
             self.config = load_config(self.config.work_dir)
             self.db.log_event("INFO", "SET_NOTIFY", str(value))
-            await self.safe_reply(
-                event,
-                f"✅ <b>系统通知目标已更新</b>\n"
-                f"· 新目标：<code>{value if value is not None else 'Saved Messages'}</code>\n"
-                f"· 说明：启动通知、自动同步报告、升级提示都会发往这里。",
-            )
+            await self.safe_reply(event, panel("系统通知目标已更新", [section("新配置", [bullet("通知去向", value if value is not None else "Saved Messages"), bullet("覆盖范围", "启动 / 同步 / 更新 / 恢复", code=False)])]))
             return
 
         if command == "setalert":
@@ -154,30 +163,18 @@ class AdminApp:
             update_config_data(self.config.work_dir, {"global_alert_channel_id": value})
             self.config = load_config(self.config.work_dir)
             self.db.log_event("INFO", "SET_ALERT", str(value))
-            await self.safe_reply(
-                event,
-                f"✅ <b>默认告警频道已更新</b>\n"
-                f"· 新目标：<code>{value if value is not None else '未设置'}</code>\n"
-                f"· 说明：未单独指定 alert_channel 的分组会走这里。",
-            )
+            await self.safe_reply(event, panel("默认告警频道已更新", [section("新配置", [bullet("默认告警", value if value is not None else "未设置"), bullet("生效范围", "未单独配置告警频道的分组", code=False)])]))
             return
 
         if command == "setprefix":
             value = args.strip()
-            if not value or len(value) > 3 or " " in value or any(ch in value for ch in ["\", """, "'"]):
-                await self.safe_reply(event, "⚠️ <b>前缀格式无效</b>\n建议使用 1-3 个字符，且不能包含空格、引号或反斜杠。")
+            if not value or len(value) > 3 or " " in value or any(ch in value for ch in ["\\", '"', "'"]):
+                await self.safe_reply(event, panel("命令前缀格式无效", [section("输入要求", [bullet("长度", "1-3 个字符", code=False), bullet("限制", "不能包含空格、引号、反斜杠", code=False)])]))
                 return
             update_config_data(self.config.work_dir, {"cmd_prefix": value})
             self.db.log_event("INFO", "SET_PREFIX", value)
             self.write_last_message(event.id, "restart")
-            await self.safe_reply(
-                event,
-                f"✅ <b>命令前缀已更新</b>\n"
-                f"· 新前缀：<code>{html.escape(value)}</code>\n"
-                f"· 后续使用：<code>{html.escape(value)}help</code>\n\n"
-                f"<i>即将重启双服务并加载新前缀。</i>",
-                auto_delete=0,
-            )
+            await self.safe_reply(event, panel("命令前缀已更新", [section("新前缀", [bullet("命令前缀", value), bullet("试用命令", f"{value}help")])], "<i>接下来会自动重启 Admin / Core，新的前缀会在服务恢复后立刻生效。</i>"), auto_delete=0)
             self.restart_services(delay=1.2)
             return
 
@@ -187,16 +184,16 @@ class AdminApp:
                 limit = min(200, max(1, int(args)))
             rows = self.db.recent_logs(limit)
             if not rows:
-                await self.safe_reply(event, "📋 <b>当前还没有可展示的运行日志</b>")
+                await self.safe_reply(event, panel("最近运行日志", [section("结果", ["· <i>目前还没有可展示的日志。</i>"])]))
                 return
             body = "\n".join(f"[{row['created_at']}] {row['level']}/{row['action']} :: {row['detail']}" for row in rows)
-            await self.safe_reply(event, f"📋 <b>最近 {len(rows)} 条运行日志</b>\n<blockquote expandable>{html.escape(body)}</blockquote>", auto_delete=max(90, self.config.panel_auto_delete_seconds))
+            await self.safe_reply(event, panel("最近运行日志", [section("日志内容", [blockquote_preview(body, 1800)])]), auto_delete=max(90, self.config.panel_auto_delete_seconds))
             return
 
         if command == "folders":
             rows = self.db.list_folders()
             if not rows:
-                await self.safe_reply(event, "📂 <b>当前还没有任何分组记录</b>\n<i>先执行一次同步，或者手动在 Telegram 侧创建分组后再试。</i>")
+                await self.safe_reply(event, panel("TG 分组总览", [section("当前状态", ["· <i>系统里还没有任何分组记录。先执行一次同步，或先在 Telegram 侧创建分组。</i>"])]))
                 return
             blocks = []
             for row in rows:
@@ -204,129 +201,118 @@ class AdminApp:
                 group_count = self.db.count_cache_for_folder(folder_name)
                 rule_count = self.db.count_rules_for_folder(folder_name)
                 icon = "🟢" if int(row["enabled"]) == 1 else "⚪"
-                blocks.append(
-                    f"{icon} <b>{html.escape(folder_name)}</b>\n"
-                    f"  ├ 监听状态：<code>{'开启' if int(row['enabled']) == 1 else '关闭'}</code>\n"
-                    f"  ├ 收纳群数：<code>{group_count}</code>\n"
-                    f"  └ 规则数量：<code>{rule_count}</code>"
-                )
-            await self.safe_reply(event, f"📂 <b>TG 分组总览</b>\n\n" + "\n\n".join(blocks), auto_delete=max(75, self.config.panel_auto_delete_seconds))
+                blocks.append(f"{icon} <b>{escape(folder_name)}</b>\n· 监听：{html_code('开启' if int(row['enabled']) == 1 else '关闭')}\n· 群数：{html_code(group_count)}\n· 规则：{html_code(rule_count)}")
+            await self.safe_reply(event, panel("TG 分组总览", [section("当前分组", blocks)]), auto_delete=max(75, self.config.panel_auto_delete_seconds))
             return
 
         if command == "rules":
             if not args:
-                await self.safe_reply(event, f"⚠️ <b>请指定分组名</b>\n示例：<code>{prefix}rules 业务群</code>")
+                await self.safe_reply(event, panel("缺少参数", [section("示例", [f"<code>{prefix}rules 业务群</code>"])]))
                 return
             folder = self.find_folder(args)
             if folder is None:
-                await self.safe_reply(event, "⚠️ <b>找不到该分组</b>\n<i>可以先发送 folders 查看系统当前识别到的分组。</i>")
+                await self.safe_reply(event, panel("找不到该分组", [section("提示", [f"· 先发送 <code>{prefix}folders</code> 查看系统已识别的分组。"])]))
                 return
             rows = self.db.get_rules_for_folder(folder)
             if not rows:
-                body = "<i>该分组还没有监控规则</i>"
-            else:
-                body = "\n\n".join(
-                    f"<b>{html.escape(row['rule_name'])}</b>\n<code>{html.escape(row['pattern'])}</code>" for row in rows
-                )
-            await self.safe_reply(event, f"🛡️ <b>{html.escape(folder)} · 规则面板</b>\n<blockquote>{body}</blockquote>", auto_delete=max(75, self.config.panel_auto_delete_seconds))
+                await self.safe_reply(event, panel(f"{folder} 的规则面板", [section("当前状态", ["· <i>该分组还没有任何启用中的规则。</i>"])]))
+                return
+            blocks = []
+            for row in rows:
+                blocks.append(f"<b>{escape(row['rule_name'])}</b>\n· 表达式：<code>{escape(row['pattern'])}</code>\n· 更新时间：<code>{escape(row['updated_at'])}</code>")
+            await self.safe_reply(event, panel(f"{folder} 的规则面板", [section("已启用规则", blocks)]), auto_delete=max(80, self.config.panel_auto_delete_seconds))
             return
 
-        if command in {"enable", "disable"}:
+        if command == "enable":
             if not args:
-                await self.safe_reply(event, f"⚠️ <b>请指定分组名</b>\n示例：<code>{prefix}{command} 业务群</code>")
+                await self.safe_reply(event, panel("缺少参数", [section("示例", [f"<code>{prefix}enable 业务群</code>"])]))
                 return
             folder = self.find_folder(args)
             if folder is None:
-                await self.safe_reply(event, "⚠️ <b>找不到该分组</b>")
+                await self.safe_reply(event, panel("找不到该分组", [section("提示", [f"· 先发送 <code>{prefix}folders</code> 查看列表。"])]))
                 return
-            self.db.set_folder_enabled(folder, command == "enable")
+            self.db.set_folder_enabled(folder, True)
             sync_snapshot_to_config(self.config.work_dir, self.db)
-            self.db.log_event("INFO", "TOGGLE_FOLDER", f"{folder} -> {command}")
-            word = "开启" if command == "enable" else "关闭"
-            await self.safe_reply(
-                event,
-                f"✅ <b>分组状态已更新</b>\n"
-                f"· 分组：<code>{html.escape(folder)}</code>\n"
-                f"· 当前状态：<code>{word}</code>\n"
-                f"· 生效方式：<code>即时热更新，无需重启</code>",
-            )
+            self.db.log_event("INFO", "ENABLE_FOLDER", folder)
+            await self.safe_reply(event, panel("分组监控已开启", [section("当前动作", [bullet("分组", folder), bullet("状态", "开启")])], "<i>这项变更已经写入 revision，Core 会在轮询周期内自动热更新。</i>"))
+            return
+
+        if command == "disable":
+            if not args:
+                await self.safe_reply(event, panel("缺少参数", [section("示例", [f"<code>{prefix}disable 业务群</code>"])]))
+                return
+            folder = self.find_folder(args)
+            if folder is None:
+                await self.safe_reply(event, panel("找不到该分组", [section("提示", [f"· 先发送 <code>{prefix}folders</code> 查看列表。"])]))
+                return
+            self.db.set_folder_enabled(folder, False)
+            sync_snapshot_to_config(self.config.work_dir, self.db)
+            self.db.log_event("INFO", "DISABLE_FOLDER", folder)
+            await self.safe_reply(event, panel("分组监控已关闭", [section("当前动作", [bullet("分组", folder), bullet("状态", "关闭")])], "<i>对应监听目标会在 revision watcher 重新装载后停止匹配。</i>"))
             return
 
         if command == "addrule":
             tokens = shlex.split(args)
             if len(tokens) < 3:
-                await self.safe_reply(event, f"⚠️ <b>参数不足</b>\n示例：<code>{prefix}addrule 业务群 核心词 苹果 华为</code>")
+                await self.safe_reply(event, panel("参数不足", [section("示例", [f"<code>{prefix}addrule 业务群 核心词 苹果 华为</code>"])]))
                 return
-            folder = self.find_folder(tokens[0])
-            if folder is None:
-                await self.safe_reply(event, "⚠️ <b>找不到该分组</b>")
-                return
+            folder = self.find_folder(tokens[0]) or tokens[0]
             rule_name = tokens[1]
             pattern = normalize_pattern_from_terms(" ".join(tokens[2:]))
+            if self.db.get_folder(folder) is None:
+                self.db.upsert_folder(folder, None, enabled=False)
             self.db.upsert_rule(folder, rule_name, pattern)
             sync_snapshot_to_config(self.config.work_dir, self.db)
             self.db.log_event("INFO", "ADD_RULE", f"{folder}/{rule_name} -> {pattern}")
-            await self.safe_reply(
-                event,
-                f"✅ <b>规则已保存</b>\n"
-                f"· 分组：<code>{html.escape(folder)}</code>\n"
-                f"· 规则名：<code>{html.escape(rule_name)}</code>\n"
-                f"· 匹配式：<code>{html.escape(pattern)}</code>\n"
-                f"· 生效方式：<code>即时热更新</code>",
-            )
+            await self.safe_reply(event, panel("规则已保存", [section("规则详情", [bullet("分组", folder), bullet("规则名", rule_name), bullet("表达式", pattern)])], "<i>如需让该分组立即参与监听，请确认分组处于开启状态。</i>"))
             return
 
         if command == "delrule":
             tokens = shlex.split(args)
             if len(tokens) < 2:
-                await self.safe_reply(event, f"⚠️ <b>参数不足</b>\n示例：<code>{prefix}delrule 业务群 核心词 [要删的词]</code>")
+                await self.safe_reply(event, panel("参数不足", [section("示例", [f"<code>{prefix}delrule 业务群 核心词</code>", f"<code>{prefix}delrule 业务群 核心词 苹果</code>"])]))
                 return
-            folder = self.find_folder(tokens[0])
-            if folder is None:
-                await self.safe_reply(event, "⚠️ <b>找不到该分组</b>")
-                return
+            folder = self.find_folder(tokens[0]) or tokens[0]
             rule_name = tokens[1]
-            if len(tokens) == 2:
-                if not self.db.delete_rule(folder, rule_name):
-                    await self.safe_reply(event, "⚠️ <b>没有找到这条规则</b>")
-                    return
-                sync_snapshot_to_config(self.config.work_dir, self.db)
-                self.db.log_event("INFO", "DELETE_RULE", f"{folder}/{rule_name}")
-                await self.safe_reply(event, f"🗑️ <b>规则已删除</b>\n· 分组：<code>{html.escape(folder)}</code>\n· 规则名：<code>{html.escape(rule_name)}</code>")
+            terms = tokens[2:]
+            rows = self.db.get_rules_for_folder(folder)
+            rule = next((row for row in rows if row["rule_name"] == rule_name), None)
+            if rule is None:
+                await self.safe_reply(event, panel("找不到该规则", [section("定位信息", [bullet("分组", folder), bullet("规则名", rule_name)])]))
                 return
-            current_rows = self.db.get_rules_for_folder(folder)
-            current = next((row for row in current_rows if row["rule_name"] == rule_name), None)
-            if current is None:
-                await self.safe_reply(event, "⚠️ <b>没有找到这条规则</b>")
-                return
-            new_pattern = try_remove_terms_from_pattern(str(current["pattern"]), tokens[2:])
-            if new_pattern is None:
+            if not terms:
                 self.db.delete_rule(folder, rule_name)
                 sync_snapshot_to_config(self.config.work_dir, self.db)
-                self.db.log_event("INFO", "DELETE_RULE", f"{folder}/{rule_name} -> removed all terms")
-                await self.safe_reply(event, f"🗑️ <b>规则已整体删除</b>\n· 分组：<code>{html.escape(folder)}</code>\n· 规则名：<code>{html.escape(rule_name)}</code>")
+                self.db.log_event("INFO", "DELETE_RULE", f"{folder}/{rule_name}")
+                await self.safe_reply(event, panel("规则已删除", [section("删除结果", [bullet("分组", folder), bullet("规则名", rule_name)])]))
+                return
+            new_pattern = try_remove_terms_from_pattern(rule["pattern"], terms)
+            if not new_pattern:
+                self.db.delete_rule(folder, rule_name)
+                sync_snapshot_to_config(self.config.work_dir, self.db)
+                await self.safe_reply(event, panel("规则已清空", [section("删除结果", [bullet("分组", folder), bullet("规则名", rule_name)])]))
                 return
             self.db.update_rule_pattern(folder, rule_name, new_pattern)
             sync_snapshot_to_config(self.config.work_dir, self.db)
             self.db.log_event("INFO", "UPDATE_RULE", f"{folder}/{rule_name} -> {new_pattern}")
-            await self.safe_reply(event, f"✅ <b>规则已更新</b>\n· 新表达式：<code>{html.escape(new_pattern)}</code>")
+            await self.safe_reply(event, panel("规则已更新", [section("新表达式", [f"<code>{escape(new_pattern)}</code>"])]))
             return
 
         if command == "routes":
             rows = self.db.list_routes()
             if not rows:
-                await self.safe_reply(event, "🔀 <b>当前没有自动收纳规则</b>")
+                await self.safe_reply(event, panel("自动收纳规则面板", [section("当前状态", ["· <i>当前没有自动收纳规则。</i>"])]))
                 return
-            body = "\n\n".join(
-                f"<b>{html.escape(row['folder_name'])}</b>\n<code>{html.escape(row['pattern'])}</code>" for row in rows
-            )
-            await self.safe_reply(event, f"🔀 <b>自动收纳规则面板</b>\n<blockquote>{body}</blockquote>", auto_delete=max(75, self.config.panel_auto_delete_seconds))
+            blocks = []
+            for row in rows:
+                blocks.append(f"<b>{escape(row['folder_name'])}</b>\n· 路由表达式：<code>{escape(row['pattern'])}</code>\n· 更新时间：<code>{escape(row['updated_at'])}</code>")
+            await self.safe_reply(event, panel("自动收纳规则面板", [section("当前规则", blocks)]), auto_delete=max(75, self.config.panel_auto_delete_seconds))
             return
 
         if command == "addroute":
             tokens = shlex.split(args)
             if len(tokens) < 2:
-                await self.safe_reply(event, f"⚠️ <b>参数不足</b>\n示例：<code>{prefix}addroute 业务群 供需 担保</code>")
+                await self.safe_reply(event, panel("参数不足", [section("示例", [f"<code>{prefix}addroute 业务群 供需 担保</code>"])]))
                 return
             folder = self.find_folder(tokens[0]) or tokens[0]
             if self.db.get_folder(folder) is None:
@@ -336,26 +322,20 @@ class AdminApp:
             self.db.set_route(folder, pattern)
             sync_snapshot_to_config(self.config.work_dir, self.db)
             self.db.log_event("INFO", "ADD_ROUTE", f"{folder} -> {pattern}")
-            await self.safe_reply(
-                event,
-                f"✅ <b>自动收纳规则已保存</b>\n"
-                f"· 分组：<code>{html.escape(folder)}</code>\n"
-                f"· 路由规则：<code>{html.escape(pattern)}</code>\n"
-                f"· 说明：后续自动同步会持续检查并把匹配的新群排队补入该分组。",
-            )
+            await self.safe_reply(event, panel("自动收纳规则已保存", [section("规则详情", [bullet("分组", folder), bullet("路由表达式", pattern)])], "<i>后续自动同步会持续扫描新群，并把命中的目标加入路由补群队列。</i>"))
             return
 
         if command == "delroute":
             if not args:
-                await self.safe_reply(event, f"⚠️ <b>参数不足</b>\n示例：<code>{prefix}delroute 业务群</code>")
+                await self.safe_reply(event, panel("参数不足", [section("示例", [f"<code>{prefix}delroute 业务群</code>"])]))
                 return
             folder = self.find_folder(args) or args.strip()
             if not self.db.delete_route(folder):
-                await self.safe_reply(event, "⚠️ <b>没有找到该自动收纳规则</b>")
+                await self.safe_reply(event, panel("没有找到该自动收纳规则", [section("定位信息", [bullet("分组", folder)])]))
                 return
             sync_snapshot_to_config(self.config.work_dir, self.db)
             self.db.log_event("INFO", "DELETE_ROUTE", folder)
-            await self.safe_reply(event, f"🗑️ <b>自动收纳规则已删除</b>\n· 分组：<code>{html.escape(folder)}</code>")
+            await self.safe_reply(event, panel("自动收纳规则已删除", [section("删除结果", [bullet("分组", folder)])]))
             return
 
         if command == "sync":
@@ -364,14 +344,7 @@ class AdminApp:
 
         if command == "restart":
             self.write_last_message(event.id, "restart")
-            await self.safe_reply(
-                event,
-                "🔄 <b>TG-Radar 即将重启</b>\n"
-                "· Admin / Core 会一起重启\n"
-                "· 数据库中的未完成路由任务会被保留\n"
-                "· 重启后系统会自动接管未完成任务",
-                auto_delete=0,
-            )
+            await self.safe_reply(event, panel("TG-Radar 即将重启", [section("执行说明", [bullet("影响范围", "Admin / Core 双服务", code=False), bullet("任务状态", "数据库中未完成的路由任务会继续保留", code=False), bullet("恢复方式", "重启后系统会自动接管未完成任务", code=False)])]), auto_delete=0)
             self.db.log_event("INFO", "RESTART", "restart requested from Telegram")
             self.restart_services(delay=1.2)
             return
@@ -381,22 +354,14 @@ class AdminApp:
             await self.run_update_command(event)
             return
 
-        await self.safe_reply(event, f"⚠️ <b>未知命令</b>\n请发送 <code>{prefix}help</code> 查看可用指令。")
+        await self.safe_reply(event, panel("未知命令", [section("下一步", [f"· 发送 <code>{prefix}help</code> 查看可用命令。"])]))
 
     async def run_sync_command(self, event: events.NewMessage.Event) -> None:
         if self.sync_lock.locked():
-            await self.safe_reply(event, "⚠️ <b>系统正忙</b>\n后台正在执行其他同步任务，请稍等一两秒后再试。")
+            await self.safe_reply(event, panel("系统正忙", [section("提示", ["· 后台正在执行其他同步任务，请稍后再试。"])]))
             return
         async with self.sync_lock:
-            await self.safe_reply(
-                event,
-                "⏳ <b>正在执行全量同步</b>\n"
-                "· 比对 Telegram 分组拓扑\n"
-                "· 回写缓存与规则快照\n"
-                "· 扫描自动收纳并补充队列\n"
-                "· 命中配置通过 revision 立即热更新",
-                auto_delete=0,
-            )
+            await self.safe_reply(event, panel("正在执行全量同步", [section("同步阶段", ["· 比对 Telegram 分组拓扑", "· 回写缓存与规则快照", "· 扫描自动收纳并补充队列", "· revision 变更后立即热更新"])]), auto_delete=0)
             sync_report = await sync_dialog_folders(self.client, self.db)
             route_report = await scan_auto_routes(self.client, self.db)
             sync_snapshot_to_config(self.config.work_dir, self.db)
@@ -405,28 +370,18 @@ class AdminApp:
 
     async def run_update_command(self, event: events.NewMessage.Event) -> None:
         if not (self.config.work_dir / ".git").exists():
-            await self.safe_reply(event, "⚠️ <b>当前目录不是 git 仓库</b>\n请用 git 方式部署后再执行 update。")
+            await self.safe_reply(event, panel("当前目录不是 git 仓库", [section("提示", ["· 请用 git 方式部署后再执行 update。"])]))
             return
-        await self.safe_reply(event, "🔄 <b>正在执行 git pull --ff-only</b>\n<i>更新完成后会自动重启双服务。</i>", auto_delete=0)
-        proc = await asyncio.create_subprocess_exec(
-            "git", "-C", str(self.config.work_dir), "pull", "--ff-only",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
+        await self.safe_reply(event, panel("正在拉取最新代码", [section("执行动作", ["· 运行 git pull --ff-only", "· 成功后自动重启双服务"])]), auto_delete=0)
+        proc = await asyncio.create_subprocess_exec("git", "-C", str(self.config.work_dir), "pull", "--ff-only", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         stdout, _ = await proc.communicate()
         output = (stdout or b"").decode("utf-8", errors="replace").strip()
         if proc.returncode != 0:
             self.db.log_event("ERROR", "UPDATE", output or f"git pull failed: {proc.returncode}")
-            await self.safe_reply(event, f"❌ <b>代码更新失败</b>\n<blockquote expandable>{html.escape(output or 'git pull failed')}</blockquote>")
+            await self.safe_reply(event, panel("代码更新失败", [section("输出内容", [blockquote_preview(output or 'git pull failed', 1400)])]))
             return
         self.db.log_event("INFO", "UPDATE", output or "git pull ok")
-        await self.safe_reply(
-            event,
-            f"✅ <b>代码更新完成</b>\n"
-            f"<blockquote expandable>{html.escape(output or 'Already up to date.')}</blockquote>\n"
-            f"<i>即将重启 Admin / Core 以加载新版本。</i>",
-            auto_delete=0,
-        )
+        await self.safe_reply(event, panel("代码更新完成", [section("git 输出", [blockquote_preview(output or 'Already up to date.', 1400)])], "<i>接下来会自动重启 Admin / Core，加载最新代码。</i>"), auto_delete=0)
         self.restart_services(delay=1.5)
 
     async def periodic_sync(self) -> None:
@@ -489,21 +444,7 @@ class AdminApp:
             used_ids = {int(f.id) for f in folders}
             while folder_id in used_ids:
                 folder_id += 1
-            new_filter = types.DialogFilter(
-                id=folder_id,
-                title=task.folder_name,
-                pinned_peers=[],
-                include_peers=peers[:100],
-                exclude_peers=[],
-                contacts=False,
-                non_contacts=False,
-                groups=False,
-                broadcasts=False,
-                bots=False,
-                exclude_muted=False,
-                exclude_read=False,
-                exclude_archived=False,
-            )
+            new_filter = types.DialogFilter(id=folder_id, title=task.folder_name, pinned_peers=[], include_peers=peers[:100], exclude_peers=[], contacts=False, non_contacts=False, groups=False, broadcasts=False, bots=False, exclude_muted=False, exclude_read=False, exclude_archived=False)
             await self.client(functions.messages.UpdateDialogFilterRequest(id=folder_id, filter=new_filter))
             self.db.upsert_folder(task.folder_name, folder_id)
             return
@@ -532,50 +473,40 @@ class AdminApp:
     async def send_sync_report(self, sync_report: SyncReport, route_report: RouteReport, automatic: bool = False) -> None:
         assert self.client is not None
         target = self.config.notify_channel_id if self.config.notify_channel_id is not None else "me"
-        title = "🔄 <b>TG-Radar 自动同步报告</b>" if automatic else "🔄 <b>TG-Radar 手动同步报告</b>"
-        lines = [title, ""]
+        title = "TG-Radar 自动同步报告" if automatic else "TG-Radar 手动同步报告"
         status = "发现变动并已更新" if sync_report.has_changes or route_report.queued or route_report.created else "同步完成，数据无变动"
-        lines += [
-            "<b>⚙️ 执行摘要</b>",
-            f"· 结果：<code>{status}</code>",
-            f"· 耗时：<code>{sync_report.elapsed_seconds:.1f} 秒</code>",
-            f"· 时间：<code>{datetime.now().strftime('%m-%d %H:%M:%S')}</code>",
-            "",
-            "<b>📂 分组变动详情</b>",
-        ]
+
+        folder_rows: list[str] = []
         if sync_report.discovered:
-            lines += [f"· ✨ 新分组：<code>{html.escape(name)}</code>" for name in sync_report.discovered]
+            folder_rows.extend(f"· 新分组：<code>{escape(name)}</code>" for name in sync_report.discovered)
         if sync_report.renamed:
-            lines += [f"· 🔄 已改名：<code>{html.escape(old)}</code> → <code>{html.escape(new)}</code>" for old, new in sync_report.renamed]
+            folder_rows.extend(f"· 改名：<code>{escape(old)}</code> → <code>{escape(new)}</code>" for old, new in sync_report.renamed)
         if sync_report.deleted:
-            lines += [f"· 🗑️ 已删除：<code>{html.escape(name)}</code>" for name in sync_report.deleted]
-        if not (sync_report.discovered or sync_report.renamed or sync_report.deleted):
-            lines.append("· <i>本次没有新增、改名或删除任何分组</i>")
+            folder_rows.extend(f"· 删除：<code>{escape(name)}</code>" for name in sync_report.deleted)
+        if not folder_rows:
+            folder_rows.append("· <i>本次没有新增、改名或删除任何分组。</i>")
 
-        lines += ["", "<b>🔀 自动收纳扫描</b>"]
-        if route_report.created or route_report.queued or route_report.matched_zero or route_report.already_in or route_report.errors:
-            for name in route_report.created:
-                lines.append(f"· ✨ 自动新建分组：<code>{html.escape(name)}</code>")
-            for name, cnt in route_report.queued.items():
-                lines.append(f"· ⏳ 已排队补群：<code>{html.escape(name)}</code> + <code>{cnt}</code>")
-            for name, cnt in route_report.already_in.items():
-                lines.append(f"· 📦 已在分组内：<code>{html.escape(name)}</code> · <code>{cnt}</code>")
-            for name in route_report.matched_zero:
-                lines.append(f"· 🔕 未匹配到任何群：<code>{html.escape(name)}</code>")
-            for name, err in route_report.errors.items():
-                lines.append(f"· ❌ {html.escape(name)}：{html.escape(err)}")
-        else:
-            lines.append("· <i>本次没有新增自动收纳动作</i>")
+        route_rows: list[str] = []
+        for name in route_report.created:
+            route_rows.append(f"· 新建分组：<code>{escape(name)}</code>")
+        for name, cnt in route_report.queued.items():
+            route_rows.append(f"· 排队补群：<code>{escape(name)}</code> · <code>{cnt}</code>")
+        for name, cnt in route_report.already_in.items():
+            route_rows.append(f"· 已在分组：<code>{escape(name)}</code> · <code>{cnt}</code>")
+        for name in route_report.matched_zero:
+            route_rows.append(f"· 没有命中：<code>{escape(name)}</code>")
+        for name, err in route_report.errors.items():
+            route_rows.append(f"· 错误：<code>{escape(name)}</code> · {escape(err)}")
+        if not route_rows:
+            route_rows.append("· <i>本次没有新增自动收纳动作。</i>")
 
-        lines += ["", "<b>🌐 当前分组规模</b>"]
-        if sync_report.active:
-            for name, cnt in sync_report.active.items():
-                lines.append(f"· 🟢 <b>{html.escape(name)}</b> · <code>{cnt}</code> 个群")
-        else:
-            lines.append("· <i>当前没有读取到任何分组群数据</i>")
-        lines += ["", f"💡 <i>发现新分组后，记得发送 <code>{html.escape(self.config.cmd_prefix)}enable [分组名]</code> 开启监控。</i>"]
+        active_rows = [f"· <b>{escape(name)}</b> · <code>{cnt}</code> 个群" for name, cnt in sync_report.active.items()]
+        if not active_rows:
+            active_rows = ["· <i>当前没有读取到任何分组群数据。</i>"]
+
+        message = panel(title, [section("执行摘要", [bullet("结果", status), bullet("耗时", f"{sync_report.elapsed_seconds:.1f} 秒"), bullet("时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))]), section("分组变动", folder_rows), section("自动收纳", route_rows), section("当前规模", active_rows[:8])], f"<i>发现新分组后，发送 <code>{escape(self.config.cmd_prefix)}enable 分组名</code> 即可开启监听。</i>")
         try:
-            msg = await self.client.send_message(target, "\n".join(lines), link_preview=False)
+            msg = await self.client.send_message(target, message, link_preview=False)
             if msg and self.config.notify_auto_delete_seconds > 0:
                 asyncio.create_task(self.delete_later(msg, self.config.notify_auto_delete_seconds))
         except Exception as exc:
@@ -585,52 +516,26 @@ class AdminApp:
         assert self.client is not None
         rows = self.db.list_folders()
         enabled = [row for row in rows if int(row["enabled"]) == 1]
-        folder_lines = []
-        for row in enabled:
+        folder_rows = []
+        for row in enabled[:8]:
             folder_name = row["folder_name"]
-            folder_lines.append(
-                f"🟢 <b>{html.escape(folder_name)}</b> · {self.db.count_cache_for_folder(folder_name)} 个群 · {self.db.count_rules_for_folder(folder_name)} 条规则"
-            )
-        folder_block = "\n".join(folder_lines) if folder_lines else "<i>当前没有开启任何分组监控</i>"
-        route_rows = self.db.list_routes()
-        route_block = "\n".join(
-            f"🔀 <code>{html.escape(row['pattern'])}</code> → <code>{html.escape(row['folder_name'])}</code>"
-            for row in route_rows
-        ) if route_rows else "<i>当前没有自动收纳规则</i>"
+            folder_rows.append(f"· <b>{escape(folder_name)}</b> · 群 <code>{self.db.count_cache_for_folder(folder_name)}</code> · 规则 <code>{self.db.count_rules_for_folder(folder_name)}</code>")
+        if not folder_rows:
+            folder_rows = ["· <i>当前没有开启任何分组监听。</i>"]
 
+        route_rows = [f"· <code>{escape(row['pattern'])}</code> → <code>{escape(row['folder_name'])}</code>" for row in self.db.list_routes()[:8]] or ["· <i>当前没有自动收纳规则。</i>"]
         target_map, valid_rules = self.db.build_target_map(self.config.global_alert_channel_id)
-        msg = f"""📡 <b>TG-Radar 已上线</b>
-
-<b>⚙️ 运行概况</b>
-· 架构：<code>Admin + Core / SQLite WAL</code>
-· 启动时间：<code>{self.started_at.strftime('%Y-%m-%d %H:%M:%S')}</code>
-· 自动同步：<code>每 {self.config.sync_interval_seconds} 秒</code>
-· 热更新轮询：<code>每 {self.config.revision_poll_seconds} 秒</code>
-· 版本：<code>{__version__}</code>
-
-<b>🌐 当前规模</b>
-· 活跃分组：<code>{len(enabled)}</code> / <code>{len(rows)}</code>
-· 正在监听：<code>{len(target_map)}</code> 个群 / 频道
-· 生效规则：<code>{valid_rules}</code> 条
-
-<b>[ 已启用的监控分组 ]</b>
-<blockquote>{folder_block}</blockquote>
-
-<b>[ 自动收纳规则 ]</b>
-<blockquote>{route_block}</blockquote>
-
-💡 <i>在收藏夹发送 <code>{html.escape(self.config.cmd_prefix)}help</code> 可以打开完整管理菜单。</i>"""
+        startup_card = panel("TG-Radar 已上线", [section("运行概况", [bullet("架构", "Plan C / Admin + Core / SQLite WAL"), bullet("版本", __version__), bullet("启动时间", self.started_at.strftime("%Y-%m-%d %H:%M:%S")), bullet("自动同步", f"每 {self.config.sync_interval_seconds} 秒"), bullet("热更新", f"每 {self.config.revision_poll_seconds} 秒")]), section("当前规模", [bullet("活跃分组", f"{len(enabled)} / {len(rows)}"), bullet("监听目标", f"{len(target_map)} 个群 / 频道"), bullet("生效规则", f"{valid_rules} 条")]), section("已启用分组", folder_rows), section("自动收纳规则", route_rows)], f"<i>在收藏夹发送 <code>{escape(self.config.cmd_prefix)}help</code> 可以打开完整管理面板。</i>")
 
         last_msg_path = self.config.work_dir / ".last_msg"
         target = self.config.notify_channel_id if self.config.notify_channel_id is not None else "me"
         msg_obj = None
-
         if last_msg_path.exists():
             try:
                 ctx = json.loads(last_msg_path.read_text(encoding="utf-8"))
                 action = ctx.get("action", "restart")
-                prefix_text = "✨ <b>[ 代码更新完毕 ]</b> 系统已加载最新版本。\n\n" if action == "update" else "🔄 <b>[ 重启任务完毕 ]</b> 系统已经恢复。\n\n"
-                msg_obj = await self.client.edit_message("me", int(ctx["msg_id"]), prefix_text + msg)
+                prefix_text = "✨ <b>代码更新完成</b>\n\n" if action == "update" else "🔄 <b>服务重启完成</b>\n\n"
+                msg_obj = await self.client.edit_message("me", int(ctx["msg_id"]), prefix_text + startup_card)
                 last_msg_path.unlink(missing_ok=True)
                 self.db.log_event("INFO", "RESTORE", f"system back online after {action}")
             except Exception:
@@ -638,7 +543,7 @@ class AdminApp:
 
         if msg_obj is None:
             try:
-                msg_obj = await self.client.send_message(target, msg, link_preview=False)
+                msg_obj = await self.client.send_message(target, startup_card, link_preview=False)
             except Exception as exc:
                 self.logger.warning("startup notification failed: %s", exc)
 
@@ -652,14 +557,7 @@ class AdminApp:
         except Exception:
             pass
 
-    async def safe_reply(
-        self,
-        event: events.NewMessage.Event,
-        text: str,
-        auto_delete: int | None = None,
-        prefer_edit: bool = True,
-        recycle_source_on_reply: bool = True,
-    ) -> None:
+    async def safe_reply(self, event: events.NewMessage.Event, text: str, auto_delete: int | None = None, prefer_edit: bool = True, recycle_source_on_reply: bool = True) -> None:
         delete_after = self.config.panel_auto_delete_seconds if auto_delete is None else auto_delete
         msg = None
         edited_original = False
@@ -688,69 +586,13 @@ class AdminApp:
                 pass
 
     def render_help_message(self) -> str:
-        prefix = html.escape(self.config.cmd_prefix)
-        return f"""🧭 <b>TG-Radar Command Center</b>
-<i>所有命令都在 Telegram 收藏夹执行。默认会优先编辑你刚发出的命令消息，并在设定时间后自动回收面板，避免聊天记录堆满垃圾消息。</i>
-
-<b>📊 运行状态</b>
-<code>{prefix}status</code>  — 详细运行大屏
-<code>{prefix}ping</code>    — 快速心跳测试
-<code>{prefix}log 30</code>  — 最近运行日志
-<code>{prefix}version</code> — 当前版本 / 架构信息
-<code>{prefix}config</code>  — 关键配置总览
-
-<b>📂 分组管理</b>
-<code>{prefix}folders</code>              — 查看全部 TG 分组与当前监听规模
-<code>{prefix}rules [分组名]</code>       — 查看指定分组的规则清单
-<code>{prefix}enable [分组名]</code>      — 开启该分组监控
-<code>{prefix}disable [分组名]</code>     — 关闭该分组监控
-
-<b>🛡️ 规则管理</b>
-<code>{prefix}addrule [分组] [规则名] [关键词...]</code>
-<code>{prefix}delrule [分组] [规则名]</code>
-<code>{prefix}delrule [分组] [规则名] [要删的词...]</code>
-
-<b>🔀 自动收纳</b>
-<code>{prefix}routes</code>                  — 查看自动收纳规则
-<code>{prefix}addroute [分组] [匹配词...]</code>
-<code>{prefix}delroute [分组]</code>
-
-<b>🔧 系统维护</b>
-<code>{prefix}sync</code>                  — 强制执行一次全盘同步
-<code>{prefix}setnotify [ID/off]</code>    — 设置系统通知频道
-<code>{prefix}setalert [ID/off]</code>     — 设置默认告警频道
-<code>{prefix}setprefix [新前缀]</code>     — 修改命令前缀并自动重启
-<code>{prefix}update</code>                — git pull 更新后重启
-<code>{prefix}restart</code>               — 直接重启双服务
-
-<b>💡 交互说明</b>
-· 面板模式：优先编辑原命令消息，像 PagerMaid 一样减少消息堆积
-· 自动回收：帮助面板 / 状态面板 / 同步结果会在后台自动回收
-· 即时热更：规则、开关、缓存变动会通过 revision watcher 即时生效"""
+        prefix = escape(self.config.cmd_prefix)
+        return panel("TG-Radar 管理面板", [section("运行状态", [f"<code>{prefix}status</code> · 详细状态面板", f"<code>{prefix}ping</code> · 快速心跳检测", f"<code>{prefix}log 30</code> · 最近运行日志", f"<code>{prefix}version</code> · 版本与部署信息", f"<code>{prefix}config</code> · 关键配置总览"]), section("分组与规则", [f"<code>{prefix}folders</code> · 查看全部 TG 分组", f"<code>{prefix}rules 分组名</code> · 查看分组规则", f"<code>{prefix}enable 分组名</code> · 开启监控", f"<code>{prefix}disable 分组名</code> · 关闭监控", f"<code>{prefix}addrule 分组 规则名 关键词...</code>", f"<code>{prefix}delrule 分组 规则名 [关键词...]</code>"]), section("自动收纳", [f"<code>{prefix}routes</code> · 查看路由规则", f"<code>{prefix}addroute 分组 匹配词...</code>", f"<code>{prefix}delroute 分组</code>"]), section("系统维护", [f"<code>{prefix}sync</code> · 强制执行一次同步", f"<code>{prefix}setnotify ID/off</code> · 设置通知频道", f"<code>{prefix}setalert ID/off</code> · 设置默认告警", f"<code>{prefix}setprefix 新前缀</code> · 修改前缀", f"<code>{prefix}update</code> · 更新并重启", f"<code>{prefix}restart</code> · 直接重启双服务"])], "<i>面板会优先编辑原命令消息，并在设定时间后自动回收，尽量减少 Saved Messages 的刷屏感。</i>")
 
     def render_config_message(self) -> str:
         notify_target = self.config.notify_channel_id if self.config.notify_channel_id is not None else "Saved Messages"
         alert_target = self.config.global_alert_channel_id if self.config.global_alert_channel_id is not None else "未设置"
-        return f"""🧾 <b>TG-Radar 关键配置</b>
-
-<b>通信与路由</b>
-· API_ID：<code>{self.config.api_id}</code>
-· 默认告警频道：<code>{alert_target}</code>
-· 系统通知频道：<code>{notify_target}</code>
-· 命令前缀：<code>{html.escape(self.config.cmd_prefix)}</code>
-
-<b>运行与回收</b>
-· 自动同步轮询：<code>{self.config.sync_interval_seconds} 秒</code>
-· 热更新轮询：<code>{self.config.revision_poll_seconds} 秒</code>
-· 路由队列节流：<code>{self.config.route_worker_interval_seconds} 秒</code>
-· 面板自动回收：<code>{self.config.panel_auto_delete_seconds} 秒</code>
-· 通知自动回收：<code>{self.config.notify_auto_delete_seconds} 秒</code>
-
-<b>部署信息</b>
-· 服务前缀：<code>{html.escape(self.config.service_name_prefix)}</code>
-· 全局命令：<code>TR</code>
-· 工作目录：<code>{html.escape(str(self.config.work_dir))}</code>
-· 仓库地址：<code>{html.escape(self.config.repo_url or '未设置')}</code>"""
+        return panel("TG-Radar 关键配置", [section("通信与路由", [bullet("API_ID", self.config.api_id), bullet("默认告警", alert_target), bullet("系统通知", notify_target), bullet("命令前缀", self.config.cmd_prefix)]), section("运行与回收", [bullet("自动同步", f"{self.config.sync_interval_seconds} 秒"), bullet("热更新轮询", f"{self.config.revision_poll_seconds} 秒"), bullet("路由节流", f"{self.config.route_worker_interval_seconds} 秒"), bullet("面板回收", f"{self.config.panel_auto_delete_seconds} 秒"), bullet("通知回收", f"{self.config.notify_auto_delete_seconds} 秒")]), section("部署信息", [bullet("服务前缀", self.config.service_name_prefix), bullet("终端命令", "TR"), bullet("工作目录", shorten_path(self.config.work_dir), code=False), bullet("仓库地址", self.config.repo_url or "未设置", code=False)])])
 
     def render_status_message(self) -> str:
         stats = self.db.get_runtime_stats()
@@ -761,71 +603,44 @@ class AdminApp:
         target_map, valid_rules = self.db.build_target_map(self.config.global_alert_channel_id)
         queue_size = self.db.pending_route_count()
         active_rows = []
-        for row in rows[:10]:
+        for row in rows:
             if int(row["enabled"]) != 1:
                 continue
             folder_name = row["folder_name"]
-            active_rows.append(
-                f"· {html.escape(folder_name)} — 群 <code>{self.db.count_cache_for_folder(folder_name)}</code> · 规则 <code>{self.db.count_rules_for_folder(folder_name)}</code>"
-            )
-        active_block = "\n".join(active_rows) if active_rows else "· <i>暂无启用分组</i>"
-        q_info = f"{queue_size} 个任务待补充" if queue_size > 0 else "空闲"
-        return f"""📊 <b>TG-Radar 详细监控大屏</b>
-
-<b>⚙️ 运行状态</b>
-· 系统状态：<code>🟢 稳定运行中</code>
-· 持续运行：<code>{html.escape(format_duration((datetime.now() - self.started_at).total_seconds()))}</code>
-· 自动同步：<code>{self.config.sync_interval_seconds} 秒</code>
-· 热更新轮询：<code>{self.config.revision_poll_seconds} 秒</code>
-· 路由队列：<code>{html.escape(q_info)}</code>
-
-<b>🌐 监控规模</b>
-· 活跃分组：<code>{enabled_cnt}</code> / <code>{len(rows)}</code>
-· 监听目标：<code>{len(target_map)}</code> 个群 / 频道
-· 生效规则：<code>{valid_rules}</code> 条
-· 自动收纳规则：<code>{len(self.db.list_routes())}</code> 条
-
-<b>🎯 历史统计</b>
-· 总计命中：<code>{html.escape(stats.get('total_hits', '0'))}</code>
-· 最近命中分组：<code>{html.escape(last_folder)}</code>
-· 最近命中时间：<code>{html.escape(last_time)}</code>
-
-<b>📂 已启用分组概览</b>
-<blockquote>{active_block}</blockquote>"""
+            active_rows.append(f"· {escape(folder_name)} · 群 <code>{self.db.count_cache_for_folder(folder_name)}</code> · 规则 <code>{self.db.count_rules_for_folder(folder_name)}</code>")
+            if len(active_rows) >= 8:
+                break
+        if not active_rows:
+            active_rows = ["· <i>暂无启用分组。</i>"]
+        q_info = f"{queue_size} 个任务待处理" if queue_size > 0 else "空闲"
+        return panel("TG-Radar 详细状态", [section("运行状态", [bullet("系统状态", "稳定运行中", code=False), bullet("持续运行", format_duration((datetime.now() - self.started_at).total_seconds())), bullet("自动同步", f"{self.config.sync_interval_seconds} 秒"), bullet("热更新轮询", f"{self.config.revision_poll_seconds} 秒"), bullet("路由队列", q_info, code=False)]), section("监控规模", [bullet("活跃分组", f"{enabled_cnt} / {len(rows)}"), bullet("监听目标", f"{len(target_map)} 个群 / 频道"), bullet("生效规则", f"{valid_rules} 条"), bullet("自动收纳规则", f"{len(self.db.list_routes())} 条")]), section("历史统计", [bullet("总计命中", stats.get("total_hits", "0")), bullet("最近命中分组", last_folder), bullet("最近命中时间", last_time)]), section("已启用分组", active_rows)])
 
     def render_sync_message(self, sync_report: SyncReport, route_report: RouteReport) -> str:
-        lines = [
-            "✅ <b>TG-Radar 同步执行完成</b>",
-            "",
-            "<b>📂 分组同步结果</b>",
-            f"· 变动状态：<code>{'发现变动并已更新' if sync_report.has_changes else '数据无变动'}</code>",
-            f"· 耗时：<code>{sync_report.elapsed_seconds:.1f} 秒</code>",
-            f"· 新分组：<code>{len(sync_report.discovered)}</code> · 改名：<code>{len(sync_report.renamed)}</code> · 删除：<code>{len(sync_report.deleted)}</code>",
-        ]
+        folder_rows: list[str] = []
         if sync_report.discovered:
-            lines.extend([f"· ✨ 新分组：<code>{html.escape(name)}</code>" for name in sync_report.discovered])
+            folder_rows.extend(f"· 新分组：<code>{escape(name)}</code>" for name in sync_report.discovered)
         if sync_report.renamed:
-            lines.extend([f"· 🔄 改名：<code>{html.escape(old)}</code> → <code>{html.escape(new)}</code>" for old, new in sync_report.renamed])
+            folder_rows.extend(f"· 改名：<code>{escape(old)}</code> → <code>{escape(new)}</code>" for old, new in sync_report.renamed)
         if sync_report.deleted:
-            lines.extend([f"· 🗑️ 删除：<code>{html.escape(name)}</code>" for name in sync_report.deleted])
+            folder_rows.extend(f"· 删除：<code>{escape(name)}</code>" for name in sync_report.deleted)
+        if not folder_rows:
+            folder_rows = ["· <i>分组拓扑没有变化。</i>"]
 
-        lines += ["", "<b>🔀 自动收纳扫描</b>"]
-        if route_report.created or route_report.queued or route_report.matched_zero or route_report.already_in or route_report.errors:
-            for fn in route_report.created:
-                lines.append(f"· ✨ 自动新建了分组：<code>{html.escape(fn)}</code>")
-            for fn, cnt in route_report.queued.items():
-                lines.append(f"· ⏳ 已排队补群：<code>{html.escape(fn)}</code> · <code>{cnt}</code>")
-            for fn, cnt in route_report.already_in.items():
-                lines.append(f"· 📦 已存在于分组：<code>{html.escape(fn)}</code> · <code>{cnt}</code>")
-            for fn in route_report.matched_zero:
-                lines.append(f"· 🔕 未匹配到任何群：<code>{html.escape(fn)}</code>")
-            for fn, err in route_report.errors.items():
-                lines.append(f"· ❌ <code>{html.escape(fn)}</code> · {html.escape(err)}")
-        else:
-            lines.append("· <i>没有新的自动收纳动作</i>")
+        route_rows: list[str] = []
+        for fn in route_report.created:
+            route_rows.append(f"· 新建分组：<code>{escape(fn)}</code>")
+        for fn, cnt in route_report.queued.items():
+            route_rows.append(f"· 排队补群：<code>{escape(fn)}</code> · <code>{cnt}</code>")
+        for fn, cnt in route_report.already_in.items():
+            route_rows.append(f"· 已在分组：<code>{escape(fn)}</code> · <code>{cnt}</code>")
+        for fn in route_report.matched_zero:
+            route_rows.append(f"· 没有命中：<code>{escape(fn)}</code>")
+        for fn, err in route_report.errors.items():
+            route_rows.append(f"· 错误：<code>{escape(fn)}</code> · {escape(err)}")
+        if not route_rows:
+            route_rows = ["· <i>没有新的自动收纳动作。</i>"]
 
-        lines += ["", f"💡 <i>如果发现了新分组，记得发送 <code>{html.escape(self.config.cmd_prefix)}enable [分组名]</code> 开启监控。</i>"]
-        return "\n".join(lines)
+        return panel("TG-Radar 同步完成", [section("同步结果", [bullet("变动状态", "发现变动并已更新" if sync_report.has_changes else "数据无变动", code=False), bullet("耗时", f"{sync_report.elapsed_seconds:.1f} 秒"), bullet("新分组", len(sync_report.discovered)), bullet("改名", len(sync_report.renamed)), bullet("删除", len(sync_report.deleted))]), section("分组变动", folder_rows), section("自动收纳", route_rows)], f"<i>如果发现了新分组，记得发送 <code>{escape(self.config.cmd_prefix)}enable 分组名</code> 开启监控。</i>")
 
     def find_folder(self, query: str) -> str | None:
         rows = self.db.list_folders()
@@ -846,11 +661,7 @@ class AdminApp:
         return int(raw)
 
     def restart_services(self, delay: float = 0.0) -> None:
-        cmd = [
-            "bash",
-            "-lc",
-            f"sleep {delay}; systemctl restart {self.config.service_name_prefix}-core {self.config.service_name_prefix}-admin",
-        ]
+        cmd = ["bash", "-lc", f"sleep {delay}; systemctl restart {self.config.service_name_prefix}-core {self.config.service_name_prefix}-admin"]
         subprocess.Popen(cmd)
 
     def write_last_message(self, msg_id: int, action: str) -> None:

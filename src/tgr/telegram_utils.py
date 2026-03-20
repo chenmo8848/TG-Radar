@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import html
 import re
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from telethon import types, utils
+
+
+def escape(value: object) -> str:
+    return html.escape(str(value))
+
+
+def html_code(text: object) -> str:
+    return f"<code>{escape(text)}</code>"
 
 
 def resolve_peer_id(peer: object) -> int:
@@ -83,5 +91,43 @@ def truncate_for_panel(text: str, limit: int = 1200) -> str:
     return text[: limit - 1] + "…"
 
 
-def html_code(text: object) -> str:
-    return f"<code>{html.escape(str(text))}</code>"
+def compact_text(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def blockquote_preview(text: str, limit: int = 900) -> str:
+    return f"<blockquote expandable>{escape(truncate_for_panel(compact_text(text), limit))}</blockquote>"
+
+
+def bullet(label: str, value: object | None = None, *, code: bool = True, prefix: str = "·") -> str:
+    if value is None:
+        return f"{prefix} {escape(label)}"
+    rendered = html_code(value) if code else escape(value)
+    return f"{prefix} {escape(label)}：{rendered}"
+
+
+def section(title: str, rows: Sequence[str]) -> str:
+    rows = [row for row in rows if row]
+    if not rows:
+        return ""
+    return f"<b>{escape(title)}</b>\n" + "\n".join(rows)
+
+
+def panel(title: str, sections: Sequence[str], footer: str | None = None) -> str:
+    body = [f"<b>{escape(title)}</b>"]
+    for sec in sections:
+        sec = sec.strip()
+        if sec:
+            body.append(sec)
+    if footer:
+        body.append(footer.strip())
+    return "\n\n".join(body)
+
+
+def shorten_path(path: object, keep: int = 2) -> str:
+    parts = str(path).split("/")
+    if len(parts) <= keep + 1:
+        return str(path)
+    return "…/" + "/".join(parts[-keep:])

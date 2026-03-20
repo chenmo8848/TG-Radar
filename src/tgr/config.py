@@ -120,15 +120,15 @@ def read_config_data(work_dir: Path) -> dict[str, Any]:
 
 def _descriptive_payload(data: dict[str, Any]) -> dict[str, Any]:
     return {
-        "_说明_1": "👇【核心通信凭证】前往 my.telegram.org 获取，切勿泄露",
+        "_说明_01": "【Telegram API 凭据】前往 my.telegram.org 创建应用并填入下方两项。任何情况下都不要泄露给别人。",
         "api_id": data.get("api_id", 1234567),
         "api_hash": data.get("api_hash", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"),
-        "_说明_2": "👇【消息流转设置】global_alert 为默认告警频道，notify 为系统通知频道（留 null 则发给收藏夹）",
+        "_说明_02": "【告警与通知】global_alert 是默认告警频道；notify 是系统通知频道。留空时默认发往 Saved Messages。",
         "global_alert_channel_id": data.get("global_alert_channel_id"),
         "notify_channel_id": data.get("notify_channel_id"),
-        "_说明_3": "👇【交互控制台】在 Telegram 收藏夹中触发命令的前缀，默认是减号 -",
+        "_说明_03": "【Telegram 控制台】cmd_prefix 是收藏夹命令前缀。默认减号 -，推荐保持 1-3 个字符。",
         "cmd_prefix": data.get("cmd_prefix", "-"),
-        "_说明_4": "👇【服务与轮询参数】一般无需修改；panel/notify 为 Telegram 面板与通知的自动回收秒数",
+        "_说明_04": "【服务与轮询】通常只需要关注 sync_interval_seconds；其余参数保持默认即可。",
         "service_name_prefix": data.get("service_name_prefix", "tg-radar"),
         "sync_interval_seconds": data.get("sync_interval_seconds", 60),
         "route_worker_interval_seconds": data.get("route_worker_interval_seconds", 4),
@@ -137,9 +137,9 @@ def _descriptive_payload(data: dict[str, Any]) -> dict[str, Any]:
         "notify_auto_delete_seconds": data.get("notify_auto_delete_seconds", 90),
         "recycle_fallback_command_seconds": data.get("recycle_fallback_command_seconds", 8),
         "repo_url": data.get("repo_url", DEFAULT_CONFIG["repo_url"]),
-        "_说明_5": "👇【智能收纳路由】只要加入的新群名符合规则，系统会自动把它拉入对应 TG 分组",
+        "_说明_05": "【自动收纳规则】推荐通过 Telegram 命令维护，例如 -addroute / -delroute。",
         "auto_route_rules": data.get("auto_route_rules", {}),
-        "_说明_6": "👇【系统生成区】雷达会把规则和群组拓扑实时写回这里，请通过 Telegram 命令修改，不建议手改",
+        "_说明_06": "【系统生成区域】运行后会自动回写分组规则与缓存，不建议直接人工修改。",
         "folder_rules": data.get("folder_rules", {}),
         "_system_cache": data.get("_system_cache", {}),
     }

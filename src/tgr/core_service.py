@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import os
 import re
 import signal
@@ -16,7 +15,7 @@ from .compat import seed_db_from_legacy_config_if_needed
 from .config import load_config
 from .db import RadarDB
 from .logger import setup_logger
-from .telegram_utils import build_message_link, truncate_for_panel
+from .telegram_utils import build_message_link, blockquote_preview, bullet, escape, html_code, panel, section
 from .version import __version__
 
 
@@ -26,6 +25,80 @@ class RuntimeState:
     valid_rules_count: int
     revision: int
     started_at: datetime
+
+
+@dataclass
+class RuleHit:
+    rule_name: str
+    total_count: int
+    first_hit: str
+
+
+def severity_label(rule_count: int, total_hits: int) -> tuple[str, str]:
+    if rule_count >= 3 or total_hits >= 8:
+        return "高优先级", "🔥"
+    if rule_count >= 2 or total_hits >= 4:
+        return "高关注", "🚨"
+    return "常规命中", "⚠️"
+
+
+def collect_rule_hits(pattern: re.Pattern[str], text: str, max_collect: int = 20) -> tuple[int, str | None]:
+    count = 0
+    first_hit: str | None = None
+    for idx, match in enumerate(pattern.finditer(text)):
+        if idx >= max_collect:
+            count += 1
+            continue
+        count += 1
+        if first_hit is None:
+            first_hit = match.group(0)
+    return count, first_hit
+
+
+def render_alert_message(
+    *,
+    folder_name: str,
+    chat_title: str,
+    sender_name: str,
+    chat_id: int,
+    msg_id: int,
+    msg_link: str,
+    msg_text: str,
+    rule_hits: list[RuleHit],
+) -> str:
+    total_hits = sum(item.total_count for item in rule_hits)
+    severity, icon = severity_label(len(rule_hits), total_hits)
+    detail_rows: list[str] = []
+    for item in rule_hits[:4]:
+        detail_rows.append(f"· {escape(item.rule_name)}：{html_code(item.first_hit)} × {html_code(item.total_count)}")
+    if len(rule_hits) > 4:
+        detail_rows.append(f"· 其余规则：{html_code('+' + str(len(rule_hits) - 4))}")
+
+    sections = [
+        section(
+            "告警摘要",
+            [
+                bullet("等级", severity),
+                bullet("分组", folder_name),
+                bullet("规则数", len(rule_hits)),
+                bullet("累计词频", total_hits),
+                bullet("时间", datetime.now().strftime("%m-%d %H:%M:%S")),
+            ],
+        ),
+        section(
+            "来源信息",
+            [
+                bullet("来源", chat_title),
+                bullet("发送者", sender_name),
+                bullet("Chat ID", chat_id),
+                bullet("Message ID", msg_id),
+            ],
+        ),
+        section("命中详情", detail_rows),
+        section("消息预览", [blockquote_preview(msg_text, 880)]),
+    ]
+    footer = f"{icon} <a href=\"{msg_link}\">打开原始消息</a>" if msg_link else f"{icon} <i>当前消息不支持直达链接</i>"
+    return panel("TG-Radar 告警通知", sections, footer)
 
 
 async def run(work_dir: Path) -> None:
@@ -59,13 +132,7 @@ async def run(work_dir: Path) -> None:
 
     async with TelegramClient(str(config.core_session), config.api_id, config.api_hash) as client:
         client.parse_mode = "html"
-        logger.info(
-            "core service started, version=%s, revision=%s, chats=%s, rules=%s",
-            __version__,
-            state.revision,
-            len(state.target_map),
-            state.valid_rules_count,
-        )
+        logger.info("core service started, version=%s, revision=%s, chats=%s, rules=%s", __version__, state.revision, len(state.target_map), state.valid_rules_count)
         db.log_event("INFO", "CORE", f"core service started v{__version__}")
 
         @client.on(events.NewMessage)
@@ -80,63 +147,52 @@ async def run(work_dir: Path) -> None:
                 if not msg_text:
                     return
 
-                chat = None
-                chat_title = "未知聊天"
-                sender_name = "隐藏用户"
-                sender_loaded = False
-                sent_keys: set[tuple[int, str, str]] = set()
+                chat = await event.get_chat()
+                chat_title = getattr(chat, "title", None) or getattr(chat, "username", None) or "未知来源"
+                try:
+                    sender = await event.get_sender()
+                    if getattr(sender, "bot", False):
+                        return
+                    sender_name = getattr(sender, "username", None) or getattr(sender, "first_name", None) or "隐藏用户"
+                except Exception:
+                    sender_name = "广播系统"
+
+                msg_link = build_message_link(chat, int(event.chat_id), int(event.id))
+                sent_routes: set[tuple[int, str]] = set()
 
                 for task in tasks:
+                    route_key = (int(task["alert_channel"]), str(task["folder_name"]))
+                    if route_key in sent_routes:
+                        continue
+
+                    rule_hits: list[RuleHit] = []
                     for rule_name, pattern in task["rules"]:
-                        match = pattern.search(msg_text)
-                        if not match:
+                        count, first_hit = collect_rule_hits(pattern, msg_text)
+                        if count <= 0 or not first_hit:
                             continue
-                        route_key = (int(task["alert_channel"]), str(task["folder_name"]), str(rule_name))
-                        if route_key in sent_keys:
-                            continue
-                        sent_keys.add(route_key)
+                        rule_hits.append(RuleHit(rule_name=rule_name, total_count=count, first_hit=first_hit))
 
-                        if not sender_loaded:
-                            sender_loaded = True
-                            chat = await event.get_chat()
-                            chat_title = getattr(chat, "title", None) or getattr(chat, "username", None) or "未知聊天"
-                            try:
-                                sender = await event.get_sender()
-                                if getattr(sender, "bot", False):
-                                    return
-                                sender_name = getattr(sender, "username", None) or getattr(sender, "first_name", None) or "隐藏用户"
-                            except Exception:
-                                sender_name = "广播系统"
+                    if not rule_hits:
+                        continue
 
-                        preview = html.escape(truncate_for_panel(msg_text, 1200))
-                        msg_link = build_message_link(chat, int(event.chat_id), int(event.id)) if chat is not None else ""
-                        now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        alert_text = f"""🚨 <b>TG-Radar 监控情报触发</b>
-
-<b>命中摘要</b>
-· 命中词：<code>{html.escape(match.group(0))}</code>
-· 规则名：<code>{html.escape(rule_name)}</code>
-· 所属分组：<code>{html.escape(task['folder_name'])}</code>
-· 捕获时间：<code>{now_time}</code>
-
-<b>来源信息</b>
-· 消息来源：<code>{html.escape(chat_title)}</code>
-· 发送者：<code>{html.escape(sender_name)}</code>
-· Chat ID：<code>{int(event.chat_id)}</code>
-· Message ID：<code>{int(event.id)}</code>
-
-<b>原始消息快照</b>
-<blockquote expandable>{preview}</blockquote>"""
-                        if msg_link:
-                            alert_text += f'\n🔗 <a href="{msg_link}">点击直达原始消息</a>'
-
-                        try:
-                            await client.send_message(int(task["alert_channel"]), alert_text, link_preview=False)
-                            db.increment_hit(task["folder_name"])
-                            db.log_event("INFO", "HIT", f"{rule_name} <- {chat_title}")
-                        except Exception as exc:
-                            logger.exception("failed to send alert: %s", exc)
-                            db.log_event("ERROR", "SEND_ALERT", str(exc))
+                    sent_routes.add(route_key)
+                    alert_text = render_alert_message(
+                        folder_name=str(task["folder_name"]),
+                        chat_title=chat_title,
+                        sender_name=sender_name,
+                        chat_id=int(event.chat_id),
+                        msg_id=int(event.id),
+                        msg_link=msg_link,
+                        msg_text=msg_text,
+                        rule_hits=rule_hits,
+                    )
+                    try:
+                        await client.send_message(int(task["alert_channel"]), alert_text, link_preview=False)
+                        db.increment_hit(str(task["folder_name"]))
+                        db.log_event("INFO", "HIT", f"{task['folder_name']} <- {chat_title} | rules={len(rule_hits)} hits={sum(item.total_count for item in rule_hits)}")
+                    except Exception as exc:
+                        logger.exception("failed to send alert: %s", exc)
+                        db.log_event("ERROR", "SEND_ALERT", str(exc))
             except Exception as exc:
                 logger.exception("message handler error: %s", exc)
                 db.log_event("ERROR", "CORE_HANDLER", str(exc))
@@ -188,11 +244,5 @@ def compile_target_map(raw_target_map: dict[int, list[dict]], logger) -> dict[in
                     logger.warning("invalid regex skipped: folder=%s rule=%s err=%s", task["folder_name"], rule_name, exc)
             if not compiled_rules:
                 continue
-            compiled.setdefault(chat_id, []).append(
-                {
-                    "folder_name": task["folder_name"],
-                    "alert_channel": task["alert_channel"],
-                    "rules": compiled_rules,
-                }
-            )
+            compiled.setdefault(chat_id, []).append({"folder_name": task["folder_name"], "alert_channel": task["alert_channel"], "rules": compiled_rules})
     return compiled

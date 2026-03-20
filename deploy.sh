@@ -180,7 +180,7 @@ SERVICE
 status_view() {
   line
   printf "%b\n" "${B}TG-Radar 终端控制台${C0}"
-  printf "%b\n" "${DIM}TR = Terminal Radar · Admin / Core 双服务 · /root 部署${C0}"
+  printf "%b\n" "${DIM}TR = Terminal Radar · Admin / Core 双服务 · 默认部署到 /root/TG-Radar${C0}"
   line
   printf "项目目录 : %s\n" "$APP_DIR"
   printf "源码目录 : %s\n" "$SRC_DIR"
@@ -229,7 +229,7 @@ PY
 
 doctor() {
   line
-  printf "%b\n" "${B}TG-Radar Doctor${C0}"
+  printf "%b\n" "${B}TG-Radar 自检中心${C0}"
   line
   [ -x "$VENV_PY" ] && ok "Python venv: $VENV_PY" || err "缺少 venv Python"
   [ -d "$SRC_DIR/tgr" ] && ok "源码目录: $SRC_DIR" || err "缺少 src/tgr"
@@ -297,10 +297,10 @@ menu() {
   clear
   line
   printf "%b\n" "${B}TG-Radar · Terminal Radar${C0}"
-  printf "%b\n" "${DIM}现代化双服务管理界面 · Admin / Core · 自动同步 / 热更新 / 自动收纳${C0}"
+  printf "%b\n" "${DIM}现代化双服务管理界面 · 自动同步 / 热更新 / 自动收纳 / 持久化队列${C0}"
   line
   cat <<'MENU'
-1) 写入 / 刷新 systemd 服务
+1) 写入 / 刷新 systemd 双服务
 2) 启动双服务
 3) 停止双服务
 4) 重启双服务
@@ -308,8 +308,8 @@ menu() {
 6) 查看日志（admin）
 7) 查看日志（core）
 8) 执行一次同步
-9) 重新授权 Telegram
-10) 运行 Doctor 自检
+9) 重新执行 Telegram 授权
+10) 运行环境自检
 11) 清理旧版残留（服务 / 命令 / 进程）
 12) git pull 更新并重启
 13) 彻底卸载（删除服务 / 命令 / 项目目录）
@@ -363,13 +363,13 @@ case "${1:-menu}" in
         12) update_repo ;;
         13) uninstall_all ask ;;
         0) exit 0 ;;
-        *) warn "无效选项" ;;
+        *) warn "无效选项，请重新输入菜单编号。" ;;
       esac
       echo
       if [ -r /dev/tty ]; then
-        read -rp "按回车继续..." _dummy </dev/tty
+        read -rp "按回车返回菜单..." _dummy </dev/tty
       else
-        read -rp "按回车继续..." _dummy
+        read -rp "按回车返回菜单..." _dummy
       fi
     done ;;
   *)
@@ -379,7 +379,7 @@ case "${1:-menu}" in
   TR status               查看服务状态
   TR start|stop|restart   管理双服务
   TR sync                 执行一次同步
-  TR reauth               重新授权 Telegram
+  TR reauth               重新执行 Telegram 授权
   TR logs [admin|core]    查看日志
   TR doctor               运行环境自检
   TR update               git pull 更新并重启

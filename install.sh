@@ -83,7 +83,7 @@ SYNC_ONCE_PY="$SRC_DIR/sync_once.py"
 
 line
 printf "%b\n" "${B}TG-Radar 一键部署向导${C0}"
-printf "%b\n" "${DIM}现代化双服务架构 · 保留原有自动同步 / 热更新 / 收藏夹交互 / 自动收纳逻辑 · 默认部署到 /root/TG-Radar${C0}"
+printf "%b\n" "${DIM}Plan C 双服务安装向导 · 自动同步 / 热更新 / 收藏夹交互 / 自动收纳已内置 · 默认部署到 /root/TG-Radar${C0}"
 line
 
 step "安装系统依赖"
@@ -96,13 +96,13 @@ step "初始化 Python 运行环境"
 "$PY" -m pip install --upgrade pip >/dev/null
 "$PIP" install -r "$APP_DIR/requirements.txt" >/dev/null
 mkdir -p "$APP_DIR/runtime/logs" "$APP_DIR/runtime/sessions" "$APP_DIR/runtime/backups"
-ok "Python 虚拟环境与依赖已完成"
+ok "Python 环境、依赖与 runtime 目录已准备完成"
 
 step "准备默认配置"
 [ -f "$APP_DIR/config.json" ] || cp "$APP_DIR/config.example.json" "$APP_DIR/config.json"
-ok "配置模板已准备"
+ok "配置模板已准备，稍后会进入向导写入关键参数"
 
-step "预清理旧版残留（服务 / 命令 / 进程）"
+step "预清理旧版残留（服务 / 命令 / 后台进程）"
 bash "$DEPLOY_SH" cleanup-legacy --keep-current >/dev/null || true
 ok "旧版残留已清理"
 
@@ -114,7 +114,7 @@ cd "$APP_DIR"
 exec bash "$DEPLOY_SH" "\$@"
 WRAP
 chmod +x /usr/local/bin/TR
-ok "全局命令已注册：TR"
+ok "全局命令已注册：TR（Terminal Radar）"
 
 current_api_id="$($PY - <<PY
 import json, pathlib
@@ -222,7 +222,7 @@ while true; do
   warn "API_HASH 不能为空。"
 done
 
-read_tty global_alert_channel_id "默认告警频道 ID（可留空 / off） [${current_alert:-空}]: "
+read_tty global_alert_channel_id "默认告警频道 ID（留空 / off 表示暂不设置） [${current_alert:-空}]: "
 global_alert_channel_id="${global_alert_channel_id:-$current_alert}"
 case "${global_alert_channel_id,,}" in off|none|null) global_alert_channel_id="";; esac
 
@@ -294,15 +294,15 @@ data = {
 }
 
 payload = {
-    "_说明_1": "👇【核心通信凭证】前往 my.telegram.org 获取，切勿泄露",
+    "_说明_1": "👇【Telegram API 凭据】前往 my.telegram.org 获取。任何情况下都不要泄露。",
     "api_id": data["api_id"],
     "api_hash": data["api_hash"],
-    "_说明_2": "👇【消息流转设置】global_alert 为默认告警频道，notify 为系统通知频道（留 null 则发给收藏夹）",
+    "_说明_2": "👇【告警与通知】global_alert 是默认告警频道；notify 是系统通知频道。留空时默认发往 Saved Messages。",
     "global_alert_channel_id": data["global_alert_channel_id"],
     "notify_channel_id": data["notify_channel_id"],
-    "_说明_3": "👇【交互控制台】在 Telegram 收藏夹中触发命令的前缀，默认是减号 -",
+    "_说明_3": "👇【Telegram 控制台】cmd_prefix 是收藏夹命令前缀。默认减号 -，推荐保持 1-3 个字符。",
     "cmd_prefix": data["cmd_prefix"],
-    "_说明_4": "👇【服务与轮询参数】一般无需修改；panel/notify 为 Telegram 面板与通知的自动回收秒数",
+    "_说明_4": "👇【服务与轮询】通常只需要关注 sync_interval_seconds；其余参数保持默认即可。",
     "service_name_prefix": data["service_name_prefix"],
     "sync_interval_seconds": data["sync_interval_seconds"],
     "route_worker_interval_seconds": data["route_worker_interval_seconds"],
@@ -311,9 +311,9 @@ payload = {
     "notify_auto_delete_seconds": data["notify_auto_delete_seconds"],
     "recycle_fallback_command_seconds": data["recycle_fallback_command_seconds"],
     "repo_url": data["repo_url"],
-    "_说明_5": "👇【智能收纳路由】只要加入的新群名符合规则，系统会自动把它拉入对应 TG 分组",
+    "_说明_5": "👇【自动收纳规则】推荐通过 Telegram 命令维护，例如 -addroute / -delroute。",
     "auto_route_rules": data["auto_route_rules"],
-    "_说明_6": "👇【系统生成区】雷达会把规则和群组拓扑实时写回这里，请通过 Telegram 命令修改，不建议手改",
+    "_说明_6": "👇【系统生成区域】运行后会自动回写分组规则与缓存，不建议直接人工修改。",
     "folder_rules": data["folder_rules"],
     "_system_cache": data["_system_cache"],
 }
@@ -324,15 +324,15 @@ tmp.replace(config_path)
 PY
 ok "配置已写入：$APP_DIR/config.json"
 
-step "执行 Telegram 首次授权"
+step "执行 Telegram 首次授权（只需一次）"
 if [ -r /dev/tty ]; then
   PYTHONPATH="$SRC_DIR" "$PY" "$BOOTSTRAP_PY" </dev/tty
 else
   PYTHONPATH="$SRC_DIR" "$PY" "$BOOTSTRAP_PY"
 fi
-ok "Telegram 授权完成"
+ok "Telegram 授权完成，Admin / Core 将复用生成的 session"
 
-step "写入并启用 systemd 双服务"
+step "写入并启用 systemd 双服务（Admin / Core）"
 bash "$DEPLOY_SH" install-services >/dev/null
 ok "systemd 服务已注册"
 
@@ -341,7 +341,7 @@ PYTHONPATH="$SRC_DIR" "$PY" "$SYNC_ONCE_PY" || warn "首次同步未成功，可
 
 step "启动双服务"
 bash "$DEPLOY_SH" start >/dev/null
-ok "服务已启动"
+ok "服务已启动，可立即通过 TR 或收藏夹命令进行管理"
 
 CMD_HELP="$($PY - <<PY
 import json

@@ -21,7 +21,7 @@ async def main() -> None:
         route_report = await scan_auto_routes(client, db)
         sync_snapshot_to_config(work_dir, db)
         print(
-            "TG-Radar sync finished | "
+            "TG-Radar 同步完成 | "
             f"changed={sync_report.has_changes} | "
             f"discovered={len(sync_report.discovered)} | "
             f"renamed={len(sync_report.renamed)} | "
