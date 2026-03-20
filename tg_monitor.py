@@ -1,4 +1,4 @@
-import os, re, sys, json, asyncio, logging, subprocess, html, importlib
+import os, re, sys, json, asyncio, logging, subprocess, html, importlib, signal
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -14,7 +14,9 @@ SESSION_NAME = os.path.join(WORK_DIR, "TG_Radar_session")
 SERVICE_NAME = "tg_monitor"
 MONITOR_LOG_PATH = os.path.join(WORK_DIR, "monitor.log")
 
+# 💎 引入核心双锁结构：防止内存丢失与脏写覆盖
 ROUTE_QUEUE = asyncio.Queue()
+SYNC_LOCK = asyncio.Lock()  
 
 def get_mem_usage() -> str:
     try:
@@ -205,6 +207,7 @@ async def send_startup_notification(client, notify_channel, state, cmd_prefix):
     if msg_obj: asyncio.create_task(schedule_delete(msg_obj, 60))
 
 def edit_config(modifier_fn) -> tuple:
+    # 💎 JIT 写入保护：获取最新配置后瞬间覆写，杜绝所有脏读脏写
     try:
         cfg = _load_fresh_config()
         modifier_fn(cfg)
@@ -513,48 +516,54 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             await safe_reply(event, f"🔀 <b>自动路由 (群组收纳) 列表</b>\n<blockquote>{block}</blockquote>", auto_delete=45)
 
         elif command == "addroute":
-            parts = args.split(maxsplit=1)
-            if len(parts) < 2: return await safe_reply(event, f"⚠️ <b>内容不完整</b>\n正确格式: <code>{pe}addroute [要存入的分组名] [群名匹配词]</code>", 15)
-            folder_name, raw_pattern = parts[0].strip(), parts[1].strip()
+            # 💎 互斥锁保护，防止用户连点导致 API 洪水
+            if SYNC_LOCK.locked():
+                return await safe_reply(event, "⚠️ <b>系统正忙</b>\n后台正在执行其他同步任务，请等待几秒后再试。", 15)
             
-            if " " in raw_pattern and "|" not in raw_pattern and not raw_pattern.startswith("^"):
-                words = [re.escape(w) for w in raw_pattern.split() if w.strip()]
-                regex = "(" + "|".join(words) + ")"
-            else:
-                regex = raw_pattern
+            async with SYNC_LOCK:
+                parts = args.split(maxsplit=1)
+                if len(parts) < 2: return await safe_reply(event, f"⚠️ <b>内容不完整</b>\n正确格式: <code>{pe}addroute [要存入的分组名] [群名匹配词]</code>", 15)
+                folder_name, raw_pattern = parts[0].strip(), parts[1].strip()
+                
+                if " " in raw_pattern and "|" not in raw_pattern and not raw_pattern.startswith("^"):
+                    words = [re.escape(w) for w in raw_pattern.split() if w.strip()]
+                    regex = "(" + "|".join(words) + ")"
+                else:
+                    regex = raw_pattern
 
-            try: re.compile(regex)
-            except Exception as e: return await safe_reply(event, f"❌ <b>词汇格式有误</b>: <code>{e}</code>", 15)
-            
-            def do_addroute(cfg): cfg.setdefault("auto_route_rules", {})[folder_name] = regex
-            edit_config(do_addroute)
-            write_biz_log("SYS", f"添加自动收纳规则: {folder_name}")
-            
-            await safe_reply(event, f"⏳ <b>正在为您扫描并自动添加群组...</b>\n<i>(系统会遵守 Telegram 接口频率限制缓慢添加，请耐心等待...)</i>", auto_delete=0)
-            
-            report = await auto_route_groups(client, {folder_name: regex})
-            if not ROUTE_QUEUE.empty(): await ROUTE_QUEUE.join()
-            
-            import sync_engine
-            importlib.reload(sync_engine)
-            cfg = _load_fresh_config()
-            f_new, c_new, _, _ = await sync_engine.sync(client, cfg)
-            cfg["folder_rules"], cfg["_system_cache"] = f_new, c_new
-            _save_config(cfg)
-            state.hot_reload(f_new, c_new, cfg.get("auto_route_rules", {}))
+                try: re.compile(regex)
+                except Exception as e: return await safe_reply(event, f"❌ <b>词汇格式有误</b>: <code>{e}</code>", 15)
+                
+                def do_addroute(cfg): cfg.setdefault("auto_route_rules", {})[folder_name] = regex
+                edit_config(do_addroute)
+                write_biz_log("SYS", f"添加自动收纳规则: {folder_name}")
+                
+                await safe_reply(event, f"⏳ <b>正在为您扫描并自动添加群组...</b>\n<i>(系统会遵守 Telegram 接口频率限制缓慢添加，请耐心等待...)</i>", auto_delete=0)
+                
+                report = await auto_route_groups(client, {folder_name: regex})
+                if not ROUTE_QUEUE.empty(): await ROUTE_QUEUE.join()
+                
+                import sync_engine
+                importlib.reload(sync_engine)
+                # 💎 JIT 重新加载，防止异步空窗期配置被覆盖
+                fresh_cfg = _load_fresh_config()
+                f_new, c_new, _, _ = await sync_engine.sync(client, fresh_cfg)
+                fresh_cfg["folder_rules"], fresh_cfg["_system_cache"] = f_new, c_new
+                _save_config(fresh_cfg)
+                state.hot_reload(f_new, c_new, fresh_cfg.get("auto_route_rules", {}))
 
-            msg = f"✅ <b>自动收纳规则已保存</b>\n凡是满足条件的群，都会被存入 <code>{html.escape(folder_name)}</code> 分组。\n\n<b>🔍 马上为您执行了一次全盘扫描：</b>\n"
-            if folder_name in report["created"]:
-                msg += f"· 💡 <b>为您新建了分组</b>: 系统发现您原来没建这个分组，已经帮您建好了，并找到了 <code>{report['queued'].get(folder_name,0)}</code> 个群成功加了进去。"
-            elif folder_name in report["matched_zero"]:
-                msg += "· 🔕 <b>没有匹配到群</b>: 翻遍了您的账号，没有找到名字里包含这些词的群组。"
-            else:
-                queued = report["queued"].get(folder_name, 0)
-                already = report["already_in"].get(folder_name, 0)
-                if queued > 0: msg += f"· ⏳ <b>自动添加完成</b>: 成功找到了 <code>{queued}</code> 个需要加入的群，并已全数为您收纳妥当。\n"
-                if already > 0: msg += f"· ✅ <b>跳过已有群</b>: 有 <code>{already}</code> 个群本来就在这个分组里，已为您自动跳过。"
+                msg = f"✅ <b>自动收纳规则已保存</b>\n凡是满足条件的群，都会被存入 <code>{html.escape(folder_name)}</code> 分组。\n\n<b>🔍 马上为您执行了一次全盘扫描：</b>\n"
+                if folder_name in report["created"]:
+                    msg += f"· 💡 <b>为您新建了分组</b>: 系统发现您原来没建这个分组，已经帮您建好了，并找到了 <code>{report['queued'].get(folder_name,0)}</code> 个群成功加了进去。"
+                elif folder_name in report["matched_zero"]:
+                    msg += "· 🔕 <b>没有匹配到群</b>: 翻遍了您的账号，没有找到名字里包含这些词的群组。"
+                else:
+                    queued = report["queued"].get(folder_name, 0)
+                    already = report["already_in"].get(folder_name, 0)
+                    if queued > 0: msg += f"· ⏳ <b>自动添加完成</b>: 成功找到了 <code>{queued}</code> 个需要加入的群，并已全数为您收纳妥当。\n"
+                    if already > 0: msg += f"· ✅ <b>跳过已有群</b>: 有 <code>{already}</code> 个群本来就在这个分组里，已为您自动跳过。"
 
-            await safe_reply(event, msg, 25)
+                await safe_reply(event, msg, 25)
 
         elif command == "delroute":
             if not args: return await safe_reply(event, f"⚠️ <b>参数缺失</b>: <code>{pe}delroute [分组名]</code>", 15)
@@ -566,37 +575,42 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
             await apply_hot_reload(event, state, f"🗑️ <b>收纳规则已删除</b>\n以后将不再自动往 <code>{html.escape(folder_name)}</code> 里加群了。", 15)
 
         elif command == "sync":
-            await safe_reply(event, f"⏳ <b>正在为您扫描并自动添加群组...</b>\n<i>(系统会遵守 Telegram 接口频率限制缓慢添加，请耐心等待...)</i>", auto_delete=0)
-            import sync_engine
-            importlib.reload(sync_engine)
-            cfg = _load_fresh_config()
+            if SYNC_LOCK.locked():
+                return await safe_reply(event, "⚠️ <b>系统正忙</b>\n后台正在执行其他同步任务，请等待几秒后再试。", 15)
             
-            report = await auto_route_groups(client, cfg.get("auto_route_rules", {}))
-            if not ROUTE_QUEUE.empty(): await ROUTE_QUEUE.join()
+            async with SYNC_LOCK:
+                await safe_reply(event, f"⏳ <b>正在为您扫描并自动添加群组...</b>\n<i>(系统会遵守 Telegram 接口频率限制缓慢添加，请耐心等待...)</i>", auto_delete=0)
+                import sync_engine
+                importlib.reload(sync_engine)
+                cfg = _load_fresh_config()
                 
-            f_new, c_new, has_changes, sync_report = await sync_engine.sync(client, cfg)
-            
-            cfg["folder_rules"], cfg["_system_cache"] = f_new, c_new
-            _save_config(cfg)
-            state.hot_reload(f_new, c_new, cfg.get("auto_route_rules", {}))
-            
-            if has_changes or report["queued"] or report["created"]:
-                write_biz_log("SYNC", "执行了数据同步，后台任务已启动")
-            else:
-                write_biz_log("SYNC", "数据同步完毕，一切正常")
+                report = await auto_route_groups(client, cfg.get("auto_route_rules", {}))
+                if not ROUTE_QUEUE.empty(): await ROUTE_QUEUE.join()
+                    
+                f_new, c_new, has_changes, sync_report = await sync_engine.sync(client, cfg)
                 
-            msg = f"✅ <b>TG 最新数据已同步完毕</b>\n\n"
-            msg += f"· 系统刚才顺便帮您检查了 <code>{len(cfg.get('auto_route_rules', {}))}</code> 条自动收纳规则。\n"
-            
-            if report["queued"] or report["created"] or report["matched_zero"] or report["errors"]:
-                msg += "\n<b>[ 自动收纳任务执行情况 ]</b>\n<blockquote>"
-                for fn in report["created"]: msg += f"· {html.escape(fn)} : ✨ 为您自动新建了该分组\n"
-                for fn, cnt in report["queued"].items(): msg += f"· {html.escape(fn)} : ✅ 成功为您添加了 {cnt} 个群\n"
-                for fn in report["matched_zero"]: msg += f"· {html.escape(fn)} : 🔕 没找到符合名字的群\n"
-                for fn, err in report["errors"].items(): msg += f"· {html.escape(fn)} : ❌ 接口提示错误\n"
-                msg += "</blockquote>"
+                fresh_cfg = _load_fresh_config()
+                fresh_cfg["folder_rules"], fresh_cfg["_system_cache"] = f_new, c_new
+                _save_config(fresh_cfg)
+                state.hot_reload(f_new, c_new, fresh_cfg.get("auto_route_rules", {}))
                 
-            await safe_reply(event, msg, 25)
+                if has_changes or report["queued"] or report["created"]:
+                    write_biz_log("SYNC", "执行了数据同步，后台任务已启动")
+                else:
+                    write_biz_log("SYNC", "数据同步完毕，一切正常")
+                    
+                msg = f"✅ <b>TG 最新数据已同步完毕</b>\n\n"
+                msg += f"· 系统刚才顺便帮您检查了 <code>{len(cfg.get('auto_route_rules', {}))}</code> 条自动收纳规则。\n"
+                
+                if report["queued"] or report["created"] or report["matched_zero"] or report["errors"]:
+                    msg += "\n<b>[ 自动收纳任务执行情况 ]</b>\n<blockquote>"
+                    for fn in report["created"]: msg += f"· {html.escape(fn)} : ✨ 为您自动新建了该分组\n"
+                    for fn, cnt in report["queued"].items(): msg += f"· {html.escape(fn)} : ✅ 成功为您添加了 {cnt} 个群\n"
+                    for fn in report["matched_zero"]: msg += f"· {html.escape(fn)} : 🔕 没找到符合名字的群\n"
+                    for fn, err in report["errors"].items(): msg += f"· {html.escape(fn)} : ❌ 接口提示错误\n"
+                    msg += "</blockquote>"
+                    
+                await safe_reply(event, msg, 25)
 
         elif command == "update":
             if not ROUTE_QUEUE.empty():
@@ -676,6 +690,22 @@ def register_handlers(client, state: AppState, notify_channel, cmd_prefix) -> No
         except Exception as e:
             logger.error("消息处理发生错误: %s", e)
 
+    # 💎 终极保护：注册底层的优雅停机钩子，拦截来自系统的 SIGTERM 物理斩杀
+    loop = asyncio.get_event_loop()
+    async def shutdown_gracefully():
+        logger.info("【SYS】接收到系统终止信号 (SIGTERM/SIGINT)")
+        if not ROUTE_QUEUE.empty():
+            logger.info(f"【SYS】触发保护机制：等待 {ROUTE_QUEUE.qsize()} 个后台队列任务消费完毕...")
+            await ROUTE_QUEUE.join()
+        logger.info("【SYS】队列消费完毕，安全断开 TG 连接。")
+        await client.disconnect()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown_gracefully()))
+
+    await client.run_until_disconnected()
+
+
 async def main():
     config = load_config()
     api_id, api_hash, global_alert, notify_channel, cmd_prefix, auto_route = validate_config(config)
@@ -691,34 +721,40 @@ async def main():
         asyncio.create_task(route_task_worker(client))
         
         async def internal_auto_sync():
-            await asyncio.sleep(5)  # 💎 开机先等待 5 秒钟，让开机通知顺利发送完毕
+            await asyncio.sleep(5)
             while True:
                 try:
-                    cfg = _load_fresh_config()
-                    route_report = await auto_route_groups(client, cfg.get("auto_route_rules", {}))
-                    
-                    if not ROUTE_QUEUE.empty():
-                        await ROUTE_QUEUE.join()
+                    # 💎 使用互斥锁防止 Cron 定时轮询和管理员手动指令产生冲突
+                    async with SYNC_LOCK:
+                        cfg = _load_fresh_config()
+                        route_report = await auto_route_groups(client, cfg.get("auto_route_rules", {}))
+                        
+                        if not ROUTE_QUEUE.empty():
+                            await ROUTE_QUEUE.join()
 
-                    import sync_engine
-                    importlib.reload(sync_engine)
-                    f_new, c_new, changed, _ = await sync_engine.sync(client, cfg)
-                    if changed or route_report["queued"] or route_report["created"]:
-                        cfg["folder_rules"], cfg["_system_cache"] = f_new, c_new
-                        _save_config(cfg)
-                        state.hot_reload(f_new, c_new, cfg.get("auto_route_rules", {}))
-                        logger.info("系统：开机/定时环境同步已完成。")
-                        write_biz_log("SYNC", "状态核准：配置与实际群组对齐完毕")
+                        import sync_engine
+                        importlib.reload(sync_engine)
+                        f_new, c_new, changed, _ = await sync_engine.sync(client, cfg)
+                        
+                        if changed or route_report["queued"] or route_report["created"]:
+                            fresh_cfg = _load_fresh_config()
+                            fresh_cfg["folder_rules"], fresh_cfg["_system_cache"] = f_new, c_new
+                            _save_config(fresh_cfg)
+                            state.hot_reload(f_new, c_new, fresh_cfg.get("auto_route_rules", {}))
+                            logger.info("系统：定时环境同步已完成。")
+                            write_biz_log("SYNC", "后台自动自检：配置已对齐")
                 except Exception as e:
                     logger.error("底层轮询出错: %s", e)
                 
-                await asyncio.sleep(1800) # 💎 修复完毕：放在最后，执行完所有的状态核准再睡 30 分钟！
+                await asyncio.sleep(1800)
 
         asyncio.create_task(internal_auto_sync())
         register_handlers(client, state, notify_channel, cmd_prefix)
         await send_startup_notification(client, notify_channel, state, cmd_prefix)
         write_biz_log("SYS", "程序已成功启动并开始运行")
-        await client.run_until_disconnected()
+        
+        # 将运行控制权交给上方的事件与钩子
+        pass 
 
 if __name__ == "__main__":
     try: asyncio.run(main())
