@@ -41,28 +41,33 @@ def configs_differ(old: dict, new: dict) -> bool:
 
 async def send_sync_report(client, notify_channel, report, elapsed, cmd_prefix):
     discovered, renamed, deleted, active, changed = report.get("discovered", []), report.get("renamed", []), report.get("deleted", []), report.get("active", {}), report.get("has_changes", False)
-    change_lines = []
-    for name in discovered: change_lines.append(f"  ✨ 新发现 <code>{html.escape(name)}</code>")
-    for old_name, new_name in renamed: change_lines.append(f"  🔄 路由重定向 <code>{html.escape(old_name)}</code> → <code>{html.escape(new_name)}</code>")
-    for name in deleted: change_lines.append(f"  🗑️ 废弃剔除 <code>{html.escape(name)}</code>")
-    change_block = "\n".join(change_lines) if change_lines else "  _(无拓扑结构变更)_"
-    active_lines = [f"  ✅ <code>{html.escape(name)}</code> · {cnt} 个下级节点" for name, cnt in active.items()]
-    active_block = "\n".join(active_lines) if active_lines else "  _(无活跃管道)_"
-    status_line = "🔔 <b>云端拓扑已更新并生效</b>" if changed else "✅ <b>云端拓扑无实质变动</b>"
     
-    msg = f"""🔄 <b>云端拓扑同步报告</b>
-━━━━━━━━━━━━━━━━━━━━━
-{status_line}
-⏱️ <b>链路耗时</b> · <code>{elapsed:.1f}</code> 秒
-🕐 <b>核准时间</b> · <code>{datetime.now().strftime('%m-%d %H:%M:%S')}</code>
-━━━━━━━━━━━━━━━━━━━━━
-<b>[ 拓扑变更详情 ]</b>
+    change_lines = []
+    for name in discovered: change_lines.append(f"· ✨ <b>发现新分组</b>: <code>{html.escape(name)}</code>")
+    for old_name, new_name in renamed: change_lines.append(f"· 🔄 <b>分组已改名</b>: <code>{html.escape(old_name)}</code> -> <code>{html.escape(new_name)}</code>")
+    for name in deleted: change_lines.append(f"· 🗑️ <b>删除了分组</b>: <code>{html.escape(name)}</code>")
+    change_block = "\n".join(change_lines) if change_lines else "· <i>(本次同步没有增删改任何分组)</i>"
+    
+    active_lines = [f"· 🟢 <b>{html.escape(name)}</b> (已收纳 <code>{cnt}</code> 个群)" for name, cnt in active.items()]
+    active_block = "\n".join(active_lines) if active_lines else "· <i>(当前没有读取到任何分组的群组数据)</i>"
+    
+    status_line = "<code>🔔 发现变动并已更新</code>" if changed else "<code>✅ 同步完成，数据无变动</code>"
+    
+    msg = f"""🔄 <b>TG 最新数据同步报告</b>
+
+<b>⚙️ 同步执行概况</b>
+· 执行结果：{status_line}
+· 耗费时间：<code>{elapsed:.1f} 秒</code>
+· 同步时间：<code>{datetime.now().strftime('%m-%d %H:%M:%S')}</code>
+
+<b>🔄 分组变动详情</b>
 {change_block}
-━━━━━━━━━━━━━━━━━━━━━
-<b>[ 活跃管道矩阵 ]</b>
+
+<b>🌐 当前存在的分组及群数</b>
 {active_block}
-━━━━━━━━━━━━━━━━━━━━━
-💡 发送 <code>{html.escape(cmd_prefix)}enable &lt;管道名&gt;</code> 唤醒新节点"""
+
+💡 <i>提示: 如果发现了新的分组，记得发送 <code>{html.escape(cmd_prefix)}enable [分组名]</code> 开启监控。</i>"""
+    
     try:
         client.parse_mode = 'html'
         await client.send_message("me", msg, link_preview=False)
@@ -94,7 +99,6 @@ async def sync(client: TelegramClient, config: dict) -> tuple:
             folder_rules[tg_title]["id"] = tg_id
             config_changed = True
         elif tg_title not in folder_rules:
-            # 💥 核心修复：彻底去掉了默认策略名中的 🟢 emoji 和空格，只保留纯文字
             folder_rules[tg_title] = {"id": tg_id, "enable": False, "alert_channel_id": None, "rules": {f"{tg_title}监控": "(示范词A|示范词B)"}}
             report["discovered"].append(tg_title)
             config_changed = True
