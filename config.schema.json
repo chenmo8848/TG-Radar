@@ -17,13 +17,19 @@
             "example": "0123456789abcdef0123456789abcdef"
         },
         "global_alert_channel_id": {
-            "type": ["integer", "null"],
+            "type": [
+                "integer",
+                "null"
+            ],
             "default": null,
             "description_zh": "默认关键词告警目标频道 ID。为空时必须在分组级别单独配置。",
             "example": -1001234567890
         },
         "notify_channel_id": {
-            "type": ["integer", "null"],
+            "type": [
+                "integer",
+                "null"
+            ],
             "default": null,
             "description_zh": "系统通知目标频道 ID。为空时发送到 Saved Messages。",
             "example": -1001234567890
@@ -54,9 +60,9 @@
         },
         "revision_poll_seconds": {
             "type": "integer",
-            "default": 3,
-            "description_zh": "Core 轮询 revision 的间隔，单位秒。",
-            "example": 3
+            "default": 0,
+            "description_zh": "Core 的兜底轮询重载间隔，单位秒。默认 0，表示关闭短周期轮询，改用事件驱动热更新；仅在需要额外保险时再开启。",
+            "example": 0
         },
         "panel_auto_delete_seconds": {
             "type": "integer",

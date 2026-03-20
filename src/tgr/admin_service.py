@@ -51,9 +51,14 @@ class AdminApp:
         self.client: TelegramClient | None = None
         self.bg_tasks: set[asyncio.Task] = set()
         self.last_command_ts = 0.0
-        self.command_bus = CommandBus(self.db)
+        self.command_bus = CommandBus(self.db, notifier=self._notify_scheduler)
         self.scheduler: AdminScheduler | None = None
         self.last_sync_result: tuple[SyncReport, RouteReport] | None = None
+        self.self_id: int | None = None
+
+    def _notify_scheduler(self) -> None:
+        if self.scheduler is not None:
+            self.scheduler.notify_new_job()
 
     async def run(self) -> None:
         self.config.sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -72,6 +77,8 @@ class AdminApp:
         async with TelegramClient(str(self.config.admin_session), self.config.api_id, self.config.api_hash) as client:
             self.client = client
             client.parse_mode = "html"
+            me = await client.get_me()
+            self.self_id = int(getattr(me, "id", 0) or 0)
             self.register_handlers(client)
             self.db.log_event("INFO", "ADMIN", f"TG-Radar admin started v{__version__}")
             await self.send_startup_notification()
@@ -98,14 +105,26 @@ class AdminApp:
             self.logger.info("TG-Radar admin service stopping")
 
     def register_handlers(self, client: TelegramClient) -> None:
-        prefix = self.config.cmd_prefix
-        cmd_regex = re.compile(rf"^{re.escape(prefix)}(\w+)[ \t]*([\s\S]*)", re.IGNORECASE)
-
-        @client.on(events.NewMessage(chats=["me"], pattern=cmd_regex))
+        @client.on(events.NewMessage)
         async def control_panel(event: events.NewMessage.Event) -> None:
-            command = event.pattern_match.group(1).lower()
-            args = (event.pattern_match.group(2) or "").strip()
+            text = (event.raw_text or "").strip()
+            if not text:
+                return
+            if not text.startswith(self.config.cmd_prefix):
+                return
+            if not await self.is_saved_messages_command(event):
+                return
+
+            match = re.match(rf"^{re.escape(self.config.cmd_prefix)}(\w+)[ \t]*([\s\S]*)", text, re.IGNORECASE)
+            if not match:
+                return
+
+            command = match.group(1).lower()
+            args = (match.group(2) or "").strip()
             self.last_command_ts = time.monotonic()
+            self.logger.info("[CMD_RX] command=%s args=%s", command, args[:200])
+            self.db.log_event("DEBUG", "COMMAND_RX", f"{command} {args[:200]}")
+
             async def _runner() -> None:
                 try:
                     await self.dispatch(event, command, args)
@@ -123,6 +142,26 @@ class AdminApp:
                     )
             self.spawn_task(_runner())
 
+    async def is_saved_messages_command(self, event: events.NewMessage.Event) -> bool:
+        if not getattr(event, "out", False):
+            return False
+        if not getattr(event, "is_private", False):
+            return False
+        try:
+            chat = await event.get_chat()
+            if getattr(chat, "self", False):
+                return True
+        except Exception:
+            pass
+        try:
+            chat_id = int(getattr(event, "chat_id", 0) or 0)
+            sender_id = int(getattr(event, "sender_id", 0) or 0)
+            if self.self_id and chat_id == self.self_id and sender_id == self.self_id:
+                return True
+        except Exception:
+            return False
+        return False
+
     async def dispatch(self, event: events.NewMessage.Event, command: str, args: str) -> None:
         prefix = escape(self.config.cmd_prefix)
 
@@ -136,7 +175,7 @@ class AdminApp:
                 event,
                 panel(
                     "TG-Radar 在线心跳",
-                    [section("快速状态", [bullet("管理层运行", format_duration((datetime.now() - self.started_at).total_seconds())), bullet("历史命中", stats.get("total_hits", "0")), bullet("热更新轮询", f"{self.config.revision_poll_seconds} 秒"), bullet("自动同步", f"{self.config.sync_interval_seconds} 秒")])],
+                    [section("快速状态", [bullet("管理层运行", format_duration((datetime.now() - self.started_at).total_seconds())), bullet("历史命中", stats.get("total_hits", "0")), bullet("热更新", "事件驱动"), bullet("自动同步", f"{self.config.sync_interval_seconds} 秒")])],
                 ),
                 auto_delete=12,
             )
@@ -175,6 +214,7 @@ class AdminApp:
             value = self.parse_int_or_none(args)
             update_config_data(self.config.work_dir, {"global_alert_channel_id": value})
             self.config = load_config(self.config.work_dir)
+            self.queue_core_reload("set_alert", str(value))
             self.db.log_event("INFO", "SET_ALERT", str(value))
             await self.safe_reply(event, panel("默认告警频道已更新", [section("新配置", [bullet("默认告警", value if value is not None else "未设置"), bullet("生效范围", "未单独配置告警频道的分组", code=False)])]))
             return
@@ -265,8 +305,9 @@ class AdminApp:
                 return
             self.db.set_folder_enabled(folder, True)
             self.queue_snapshot_flush()
+            self.queue_core_reload("enable_folder", folder)
             self.db.log_event("INFO", "ENABLE_FOLDER", folder)
-            await self.safe_reply(event, panel("分组监控已开启", [section("当前动作", [bullet("分组", folder), bullet("状态", "开启")])], "<i>这项变更已经写入 revision，Core 会在轮询周期内自动热更新。</i>"))
+            await self.safe_reply(event, panel("分组监控已开启", [section("当前动作", [bullet("分组", folder), bullet("状态", "开启")])], "<i>这项变更已直接通知 Core 立即重载，不再依赖短周期轮询。</i>"))
             return
 
         if command == "disable":
@@ -279,8 +320,9 @@ class AdminApp:
                 return
             self.db.set_folder_enabled(folder, False)
             self.queue_snapshot_flush()
+            self.queue_core_reload("disable_folder", folder)
             self.db.log_event("INFO", "DISABLE_FOLDER", folder)
-            await self.safe_reply(event, panel("分组监控已关闭", [section("当前动作", [bullet("分组", folder), bullet("状态", "关闭")])], "<i>对应监听目标会在 revision watcher 重新装载后停止匹配。</i>"))
+            await self.safe_reply(event, panel("分组监控已关闭", [section("当前动作", [bullet("分组", folder), bullet("状态", "关闭")])], "<i>对应监听目标已通知 Core 立即重载，新的匹配范围会尽快生效。</i>"))
             return
 
         if command == "addrule":
@@ -295,6 +337,7 @@ class AdminApp:
                 self.db.upsert_folder(folder, None, enabled=False)
             self.db.upsert_rule(folder, rule_name, pattern)
             self.queue_snapshot_flush()
+            self.queue_core_reload("add_rule", f"{folder}/{rule_name}")
             self.db.log_event("INFO", "ADD_RULE", f"{folder}/{rule_name} -> {pattern}")
             await self.safe_reply(event, panel("规则已保存", [section("规则详情", [bullet("分组", folder), bullet("规则名", rule_name), bullet("表达式", pattern)])], "<i>如需让该分组立即参与监听，请确认分组处于开启状态。</i>"))
             return
@@ -315,6 +358,7 @@ class AdminApp:
             if not terms:
                 self.db.delete_rule(folder, rule_name)
                 self.queue_snapshot_flush()
+                self.queue_core_reload("delete_rule", f"{folder}/{rule_name}")
                 self.db.log_event("INFO", "DELETE_RULE", f"{folder}/{rule_name}")
                 await self.safe_reply(event, panel("规则已删除", [section("删除结果", [bullet("分组", folder), bullet("规则名", rule_name)])]))
                 return
@@ -322,10 +366,12 @@ class AdminApp:
             if not new_pattern:
                 self.db.delete_rule(folder, rule_name)
                 self.queue_snapshot_flush()
+                self.queue_core_reload("clear_rule", f"{folder}/{rule_name}")
                 await self.safe_reply(event, panel("规则已清空", [section("删除结果", [bullet("分组", folder), bullet("规则名", rule_name)])]))
                 return
             self.db.update_rule_pattern(folder, rule_name, new_pattern)
             self.queue_snapshot_flush()
+            self.queue_core_reload("update_rule", f"{folder}/{rule_name}")
             self.db.log_event("INFO", "UPDATE_RULE", f"{folder}/{rule_name} -> {new_pattern}")
             await self.safe_reply(event, panel("规则已更新", [section("新表达式", [f"<code>{escape(new_pattern)}</code>"])]))
             return
@@ -349,7 +395,6 @@ class AdminApp:
             folder = self.find_folder(tokens[0]) or tokens[0]
             if self.db.get_folder(folder) is None:
                 self.db.upsert_folder(folder, None, enabled=False)
-                self.db.upsert_rule(folder, f"{folder}监控", "(监控词A|监控词B)")
             pattern = normalize_pattern_from_terms(tokens[1:])
             self.db.set_route(folder, pattern)
             self.queue_snapshot_flush()
@@ -432,6 +477,16 @@ class AdminApp:
             "config_snapshot_flush",
             priority=220,
             dedupe_key="config_snapshot_flush",
+            origin="system",
+            visible=False,
+        )
+
+    def queue_core_reload(self, reason: str, detail: str = "") -> None:
+        self.command_bus.submit(
+            "reload_core",
+            payload={"reason": reason, "detail": detail},
+            priority=40,
+            dedupe_key="reload_core",
             origin="system",
             visible=False,
         )
@@ -579,7 +634,7 @@ class AdminApp:
 
         route_rows = [f"· <code>{escape(row['pattern'])}</code> → <code>{escape(row['folder_name'])}</code>" for row in self.db.list_routes()[:8]] or ["· <i>当前没有自动收纳规则。</i>"]
         target_map, valid_rules = self.db.build_target_map(self.config.global_alert_channel_id)
-        startup_card = panel("TG-Radar 已上线", [section("运行概况", [bullet("架构", "Plan C / Admin + Core / SQLite WAL"), bullet("版本", __version__), bullet("启动时间", self.started_at.strftime("%Y-%m-%d %H:%M:%S")), bullet("自动同步", f"每 {self.config.sync_interval_seconds} 秒"), bullet("热更新", f"每 {self.config.revision_poll_seconds} 秒")]), section("当前规模", [bullet("活跃分组", f"{len(enabled)} / {len(rows)}"), bullet("监听目标", f"{len(target_map)} 个群 / 频道"), bullet("生效规则", f"{valid_rules} 条")]), section("已启用分组", folder_rows), section("自动收纳规则", route_rows)], f"<i>在收藏夹发送 <code>{escape(self.config.cmd_prefix)}help</code> 可以打开完整管理面板。</i>")
+        startup_card = panel("TG-Radar 已上线", [section("运行概况", [bullet("架构", "Plan C / Admin + Core / SQLite WAL"), bullet("版本", __version__), bullet("启动时间", self.started_at.strftime("%Y-%m-%d %H:%M:%S")), bullet("自动同步", f"每 {self.config.sync_interval_seconds} 秒"), bullet("热更新", "事件驱动 / 变更即触发")]), section("当前规模", [bullet("活跃分组", f"{len(enabled)} / {len(rows)}"), bullet("监听目标", f"{len(target_map)} 个群 / 频道"), bullet("生效规则", f"{valid_rules} 条")]), section("已启用分组", folder_rows), section("自动收纳规则", route_rows)], f"<i>在收藏夹发送 <code>{escape(self.config.cmd_prefix)}help</code> 可以打开完整管理面板。</i>")
 
         last_msg_path = self.config.work_dir / ".last_msg"
         target = self.config.notify_channel_id if self.config.notify_channel_id is not None else "me"
@@ -685,7 +740,7 @@ class AdminApp:
                     f"· 临时面板可在 {self.config.panel_auto_delete_seconds} 秒后自动回收",
                 ]),
             ],
-            "<i>发送命令后，系统会优先编辑原命令消息；耗时任务会先回执，再在后台继续执行。</i>",
+            "<i>发送命令后，系统会优先编辑原命令消息；耗时任务会先回执，再在后台继续执行。规则与分组变更会直接通知 Core 重载。</i>",
         )
 
     def render_config_message(self) -> str:
@@ -702,7 +757,7 @@ class AdminApp:
                 ]),
                 section("运行策略", [
                     bullet("自动同步", f"{self.config.sync_interval_seconds} 秒"),
-                    bullet("热更新轮询", f"{self.config.revision_poll_seconds} 秒"),
+                    bullet("热更新", "事件驱动"),
                     bullet("路由节流", f"{self.config.route_worker_interval_seconds} 秒"),
                     bullet("临时面板回收", f"{self.config.panel_auto_delete_seconds} 秒"),
                     bullet("系统通知保留", "默认保留，不自动回收", code=False),
@@ -736,7 +791,7 @@ class AdminApp:
         if not active_rows:
             active_rows = ["· <i>暂无启用分组。</i>"]
         q_info = f"{queue_size} 个任务待处理" if queue_size > 0 else "空闲"
-        return panel("TG-Radar 详细状态", [section("运行状态", [bullet("系统状态", "稳定运行中", code=False), bullet("持续运行", format_duration((datetime.now() - self.started_at).total_seconds())), bullet("自动同步", f"{self.config.sync_interval_seconds} 秒"), bullet("热更新轮询", f"{self.config.revision_poll_seconds} 秒"), bullet("路由队列", q_info, code=False), bullet("交互策略", "优先回执命令，再后台执行重任务", code=False)]), section("监控规模", [bullet("活跃分组", f"{enabled_cnt} / {len(rows)}"), bullet("监听目标", f"{len(target_map)} 个群 / 频道"), bullet("生效规则", f"{valid_rules} 条"), bullet("自动收纳规则", f"{len(self.db.list_routes())} 条")]), section("历史统计", [bullet("总计命中", stats.get("total_hits", "0")), bullet("最近命中分组", last_folder), bullet("最近命中时间", last_time)]), section("已启用分组", active_rows)])
+        return panel("TG-Radar 详细状态", [section("运行状态", [bullet("系统状态", "稳定运行中", code=False), bullet("持续运行", format_duration((datetime.now() - self.started_at).total_seconds())), bullet("自动同步", f"{self.config.sync_interval_seconds} 秒"), bullet("热更新", "事件驱动"), bullet("路由队列", q_info, code=False), bullet("交互策略", "优先回执命令，再后台执行重任务", code=False)]), section("监控规模", [bullet("活跃分组", f"{enabled_cnt} / {len(rows)}"), bullet("监听目标", f"{len(target_map)} 个群 / 频道"), bullet("生效规则", f"{valid_rules} 条"), bullet("自动收纳规则", f"{len(self.db.list_routes())} 条")]), section("历史统计", [bullet("总计命中", stats.get("total_hits", "0")), bullet("最近命中分组", last_folder), bullet("最近命中时间", last_time)]), section("已启用分组", active_rows)])
 
     def render_sync_message(self, sync_report: SyncReport, route_report: RouteReport) -> str:
         folder_rows: list[str] = []

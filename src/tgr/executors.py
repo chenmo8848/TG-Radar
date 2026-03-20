@@ -42,6 +42,8 @@ class AdminExecutors:
             return await self._execute_restart(job)
         if kind == "config_snapshot_flush":
             return await self._execute_snapshot_flush(job)
+        if kind == "reload_core":
+            return await self._execute_reload_core(job)
         return JobResult(status="done", summary=f"未实现的任务类型：{kind}", detail=str(job.payload or {}), log_action="COMMAND", log_level="ERROR")
 
     async def _execute_sync(self, job: AdminJob, automatic: bool) -> JobResult:
@@ -55,6 +57,14 @@ class AdminExecutors:
                 "config_snapshot_flush",
                 priority=200,
                 dedupe_key="config_snapshot_flush",
+                origin="system",
+                visible=False,
+            )
+            self.app.command_bus.submit(
+                "reload_core",
+                payload={"reason": "sync_changed", "detail": detail},
+                priority=40,
+                dedupe_key="reload_core",
                 origin="system",
                 visible=False,
             )
@@ -131,6 +141,44 @@ class AdminExecutors:
         delay = float(job.payload.get("delay", 1.2))
         self.app.restart_services(delay=delay)
         return JobResult(status="done", summary="重启指令已下发", detail=f"delay={delay}", log_action="RESTART")
+
+    async def _execute_reload_core(self, job: AdminJob) -> JobResult:
+        reason = str(job.payload.get("reason") or "runtime_change")
+        detail = str(job.payload.get("detail") or reason)
+
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl",
+            "kill",
+            "-s",
+            "USR1",
+            f"{self.config.service_name_prefix}-core",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await proc.communicate()
+        output = (stdout or b"").decode("utf-8", errors="replace").strip()
+        if proc.returncode == 0:
+            return JobResult(status="done", summary="Core 已触发重载", detail=detail or output or reason, log_action="CORE_RELOAD")
+
+        fallback = await asyncio.create_subprocess_exec(
+            "bash",
+            "-lc",
+            "pkill -USR1 -f 'src/radar_core.py'",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        fb_out, _ = await fallback.communicate()
+        fb_text = (fb_out or b"").decode("utf-8", errors="replace").strip()
+        if fallback.returncode == 0:
+            return JobResult(status="done", summary="Core 已触发重载", detail=detail or fb_text or reason, log_action="CORE_RELOAD")
+
+        return JobResult(
+            status="failed",
+            summary="Core 重载失败",
+            detail=output or fb_text or "无法向 Core 发送重载信号",
+            log_action="CORE_RELOAD",
+            log_level="ERROR",
+        )
 
     async def _execute_snapshot_flush(self, job: AdminJob) -> JobResult:
         # 每次执行前重读配置，确保写入最新默认结构。

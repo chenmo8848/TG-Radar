@@ -101,6 +101,17 @@ def render_alert_message(
     return panel("TG-Radar 告警通知", sections, footer)
 
 
+def reload_runtime_state(db: RadarDB, alert_channel_id: int | None, logger, state: RuntimeState) -> RuntimeState:
+    raw_target_map, valid_rules_count = db.build_target_map(alert_channel_id)
+    compiled = compile_target_map(raw_target_map, logger)
+    return RuntimeState(
+        target_map=compiled,
+        valid_rules_count=valid_rules_count,
+        revision=db.get_revision(),
+        started_at=state.started_at,
+    )
+
+
 async def run(work_dir: Path) -> None:
     config = load_config(work_dir)
     logger = setup_logger("tg-radar-core", config.logs_dir / "core.log")
@@ -120,19 +131,21 @@ async def run(work_dir: Path) -> None:
     except Exception:
         raise RuntimeError("tg-radar-core is already running")
 
+    started_at = datetime.now()
     raw_target_map, valid_rules_count = db.build_target_map(config.global_alert_channel_id)
     state = RuntimeState(
         target_map=compile_target_map(raw_target_map, logger),
         valid_rules_count=valid_rules_count,
         revision=db.get_revision(),
-        started_at=datetime.now(),
+        started_at=started_at,
     )
 
     stop_event = asyncio.Event()
+    reload_event = asyncio.Event()
 
     async with TelegramClient(str(config.core_session), config.api_id, config.api_hash) as client:
         client.parse_mode = "html"
-        logger.info("core service started, version=%s, revision=%s, chats=%s, rules=%s", __version__, state.revision, len(state.target_map), state.valid_rules_count)
+        logger.info("core service started, version=%s, revision=%s, chats=%s, rules=%s, reload=%s", __version__, state.revision, len(state.target_map), state.valid_rules_count, "signal" if hasattr(signal, "SIGUSR1") else "poll")
         db.log_event("INFO", "CORE", f"core service started v{__version__}")
 
         @client.on(events.NewMessage)
@@ -197,19 +210,30 @@ async def run(work_dir: Path) -> None:
                 logger.exception("message handler error: %s", exc)
                 db.log_event("ERROR", "CORE_HANDLER", str(exc))
 
-        async def revision_watcher() -> None:
+        async def perform_reload(trigger: str) -> None:
+            nonlocal state
+            state = reload_runtime_state(db, config.global_alert_channel_id, logger, state)
+            logger.info("core reloaded trigger=%s revision=%s chats=%s rules=%s", trigger, state.revision, len(state.target_map), state.valid_rules_count)
+            db.log_event("INFO", "CORE_RELOAD", f"trigger={trigger}; revision={state.revision}")
+
+        async def signal_reload_watcher() -> None:
+            while not stop_event.is_set():
+                await reload_event.wait()
+                reload_event.clear()
+                try:
+                    await perform_reload("signal")
+                except Exception as exc:
+                    logger.exception("signal reload error: %s", exc)
+                    db.log_event("ERROR", "CORE_RELOAD", str(exc))
+
+        async def revision_fallback_watcher() -> None:
             while not stop_event.is_set():
                 try:
                     latest = db.get_revision()
                     if latest != state.revision:
-                        raw_map, valid_rules = db.build_target_map(config.global_alert_channel_id)
-                        state.target_map = compile_target_map(raw_map, logger)
-                        state.valid_rules_count = valid_rules
-                        state.revision = latest
-                        logger.info("core reloaded revision=%s, chats=%s, rules=%s", latest, len(state.target_map), valid_rules)
-                        db.log_event("INFO", "CORE_RELOAD", f"reloaded revision {latest}")
+                        await perform_reload("fallback_poll")
                 except Exception as exc:
-                    logger.exception("revision watcher error: %s", exc)
+                    logger.exception("revision fallback watcher error: %s", exc)
                     db.log_event("ERROR", "CORE_WATCHER", str(exc))
                 await asyncio.sleep(config.revision_poll_seconds)
 
@@ -219,12 +243,22 @@ async def run(work_dir: Path) -> None:
                 loop.add_signal_handler(sig, stop_event.set)
             except NotImplementedError:
                 pass
+        if hasattr(signal, "SIGUSR1"):
+            try:
+                loop.add_signal_handler(signal.SIGUSR1, reload_event.set)
+            except NotImplementedError:
+                pass
 
-        watcher_task = asyncio.create_task(revision_watcher())
-        disconnect_task = asyncio.create_task(client.run_until_disconnected())
-        stop_task = asyncio.create_task(stop_event.wait())
-        _done, pending = await asyncio.wait({watcher_task, disconnect_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        background = [
+            asyncio.create_task(signal_reload_watcher()),
+            asyncio.create_task(client.run_until_disconnected()),
+            asyncio.create_task(stop_event.wait()),
+        ]
+        if config.revision_poll_seconds > 0:
+            background.append(asyncio.create_task(revision_fallback_watcher()))
+        _done, pending = await asyncio.wait(set(background), return_when=asyncio.FIRST_COMPLETED)
         stop_event.set()
+        reload_event.set()
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)

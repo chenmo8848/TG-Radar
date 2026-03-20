@@ -7,7 +7,7 @@
     "service_name_prefix": "tg-radar",
     "sync_interval_seconds": 1800,
     "route_worker_interval_seconds": 4,
-    "revision_poll_seconds": 3,
+    "revision_poll_seconds": 0,
     "panel_auto_delete_seconds": 45,
     "notify_auto_delete_seconds": 0,
     "recycle_fallback_command_seconds": 8,

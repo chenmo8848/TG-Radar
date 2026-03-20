@@ -19,6 +19,7 @@ class AdminScheduler:
         self.worker_semaphore = asyncio.Semaphore(self.config.max_parallel_admin_jobs)
         self.running_tasks: set[asyncio.Task] = set()
         self.last_snapshot_request = 0.0
+        self.wakeup = asyncio.Event()
 
     async def run(self) -> None:
         tasks = [
@@ -34,14 +35,25 @@ class AdminScheduler:
         if self.running_tasks:
             await asyncio.gather(*list(self.running_tasks), return_exceptions=True)
 
+    def notify_new_job(self) -> None:
+        self.wakeup.set()
+
     async def _dispatcher_loop(self) -> None:
         while not self.stop_event.is_set():
             if len(self.running_tasks) >= self.config.max_parallel_admin_jobs:
-                await asyncio.sleep(self.config.scheduler_poll_seconds)
+                try:
+                    await asyncio.wait_for(self.wakeup.wait(), timeout=self.config.scheduler_poll_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                self.wakeup.clear()
                 continue
             job = self.db.claim_next_job()
             if job is None:
-                await asyncio.sleep(self.config.scheduler_poll_seconds)
+                try:
+                    await asyncio.wait_for(self.wakeup.wait(), timeout=self.config.scheduler_poll_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                self.wakeup.clear()
                 continue
             task = asyncio.create_task(self._run_job(job))
             self.running_tasks.add(task)

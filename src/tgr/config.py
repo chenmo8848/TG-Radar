@@ -15,7 +15,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "service_name_prefix": "tg-radar",
     "sync_interval_seconds": 1800,
     "route_worker_interval_seconds": 4,
-    "revision_poll_seconds": 3,
+    "revision_poll_seconds": 0,
     "panel_auto_delete_seconds": 45,
     "notify_auto_delete_seconds": 0,
     "recycle_fallback_command_seconds": 8,
@@ -120,7 +120,7 @@ def read_config_data(work_dir: Path) -> dict[str, Any]:
     data["service_name_prefix"] = str(data.get("service_name_prefix") or "tg-radar")
     data["sync_interval_seconds"] = _normalize_positive_int(data.get("sync_interval_seconds"), DEFAULT_CONFIG["sync_interval_seconds"], 10)
     data["route_worker_interval_seconds"] = _normalize_positive_int(data.get("route_worker_interval_seconds"), DEFAULT_CONFIG["route_worker_interval_seconds"], 1)
-    data["revision_poll_seconds"] = _normalize_positive_int(data.get("revision_poll_seconds"), DEFAULT_CONFIG["revision_poll_seconds"], 1)
+    data["revision_poll_seconds"] = _normalize_positive_int(data.get("revision_poll_seconds"), DEFAULT_CONFIG["revision_poll_seconds"], 0)
     data["panel_auto_delete_seconds"] = _normalize_positive_int(data.get("panel_auto_delete_seconds"), DEFAULT_CONFIG["panel_auto_delete_seconds"], 0)
     data["notify_auto_delete_seconds"] = _normalize_positive_int(data.get("notify_auto_delete_seconds"), DEFAULT_CONFIG["notify_auto_delete_seconds"], 0)
     data["recycle_fallback_command_seconds"] = _normalize_positive_int(data.get("recycle_fallback_command_seconds"), DEFAULT_CONFIG["recycle_fallback_command_seconds"], 0)
@@ -170,7 +170,7 @@ def load_config(work_dir: Path) -> AppConfig:
         service_name_prefix=str(data.get("service_name_prefix") or "tg-radar"),
         sync_interval_seconds=_normalize_positive_int(data.get("sync_interval_seconds"), DEFAULT_CONFIG["sync_interval_seconds"], 10),
         route_worker_interval_seconds=_normalize_positive_int(data.get("route_worker_interval_seconds"), DEFAULT_CONFIG["route_worker_interval_seconds"], 1),
-        revision_poll_seconds=_normalize_positive_int(data.get("revision_poll_seconds"), DEFAULT_CONFIG["revision_poll_seconds"], 1),
+        revision_poll_seconds=_normalize_positive_int(data.get("revision_poll_seconds"), DEFAULT_CONFIG["revision_poll_seconds"], 0),
         panel_auto_delete_seconds=_normalize_positive_int(data.get("panel_auto_delete_seconds"), DEFAULT_CONFIG["panel_auto_delete_seconds"], 0),
         notify_auto_delete_seconds=_normalize_positive_int(data.get("notify_auto_delete_seconds"), DEFAULT_CONFIG["notify_auto_delete_seconds"], 0),
         recycle_fallback_command_seconds=_normalize_positive_int(data.get("recycle_fallback_command_seconds"), DEFAULT_CONFIG["recycle_fallback_command_seconds"], 0),
