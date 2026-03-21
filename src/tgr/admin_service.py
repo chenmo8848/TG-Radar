@@ -675,16 +675,24 @@ class AdminApp:
         return datetime.now().strftime("cmd-%m%d-%H%M%S-%f")[:-3]
 
     async def is_saved_messages_command(self, event: events.NewMessage.Event) -> bool:
-        if not getattr(event, "out", False):
-            return False
-        if not getattr(event, "is_private", False):
-            return False
-        try:
-            chat_id = int(getattr(event, "chat_id", 0) or 0)
-            sender_id = int(getattr(event, "sender_id", 0) or 0)
-            return bool(self.self_id and chat_id == self.self_id and sender_id == self.self_id)
-        except Exception:
-            return False
+    if not getattr(event, "is_private", False):
+        return False
+
+    # 先走本地自聊判断，不依赖网络，也不要求 event.out
+    try:
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        sender_id = int(getattr(event, "sender_id", 0) or 0)
+        if self.self_id and chat_id == self.self_id and sender_id == self.self_id:
+            return True
+    except Exception:
+        pass
+
+    # 再做远程兜底，避免 get_chat 卡住
+    try:
+        chat = await asyncio.wait_for(event.get_chat(), timeout=1.5)
+        return bool(getattr(chat, "self", False))
+    except Exception:
+        return False
 
     async def dispatch_command(self, event: events.NewMessage.Event, command: str, args: str, trace: str) -> None:
         spec = self.registry.get(command)
