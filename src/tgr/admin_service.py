@@ -27,9 +27,6 @@ from .sync_logic import RouteReport, SyncReport, scan_auto_routes, sync_dialog_f
 from .telegram_utils import blockquote_preview, bullet, dialog_filter_title, escape, format_duration, html_code, panel, section, shorten_path, soft_kv
 from .version import __version__
 
-_PANEL_TTL = 45
-_RECYCLE_TTL = 8
-
 
 class AdminApp:
     def __init__(self, work_dir: Path) -> None:
@@ -181,6 +178,11 @@ class AdminApp:
     # ── 消息工具 ──
 
     async def safe_reply(self, event, text: str, auto_delete: int | None = None, prefer_edit: bool = True) -> None:
+        # 从 general 插件配置读取超时参数
+        gcfg = self.plugin_manager.get_plugin_config_file("general", {})
+        panel_ttl = int(gcfg.get("panel_auto_delete_seconds", 45))
+        recycle_ttl = int(gcfg.get("recycle_command_seconds", 8))
+
         msg = None
         if prefer_edit:
             try:
@@ -189,14 +191,14 @@ class AdminApp:
                 pass
         if msg is None:
             msg = await self.client.send_message("me", text, reply_to=event.id, link_preview=False)
-            if _RECYCLE_TTL > 0:
+            if recycle_ttl > 0:
                 try:
                     src = await self.client.get_messages("me", ids=event.id)
                     if src:
-                        self.spawn_task(self._del(src, _RECYCLE_TTL))
+                        self.spawn_task(self._del(src, recycle_ttl))
                 except Exception:
                     pass
-        delay = _PANEL_TTL if auto_delete is None else auto_delete
+        delay = panel_ttl if auto_delete is None else auto_delete
         if delay > 0:
             self.spawn_task(self._del(msg, delay))
 
