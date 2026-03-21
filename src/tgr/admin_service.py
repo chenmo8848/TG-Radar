@@ -270,17 +270,45 @@ class AdminApp:
             if ok and changed:
                 for name in changed:
                     rok, rmsg = self.plugin_manager.reload_plugin(name)
-                    reload_results.append(f"{'✔' if rok else '✖'} {name}: {rmsg}")
+                    reload_results.append(f"{'✔' if rok else '✖'} {name}")
                 self.logger.info("自动重载 %d 个插件: %s", len(changed), changed)
-            detail_text = blockquote_preview(result.detail or result.summary, 1000)
-            secs = [section("拉取结果", [detail_text])]
+
+            # Parse git output into clean summary
+            raw = result.detail or ""
+            pull_rows = []
+            for line in raw.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("[core]"):
+                    txt = line.replace("[core]", "").strip()
+                    if "Already up to date" in txt or "already up to date" in txt.lower():
+                        pull_rows.append(bullet("核心仓库", "已是最新", code=False))
+                    elif "Updating" in txt or "file changed" in txt or "files changed" in txt:
+                        pull_rows.append(bullet("核心仓库", "已更新", code=False))
+                    else:
+                        pull_rows.append(bullet("核心仓库", txt, code=False))
+                elif line.startswith("[plugins]"):
+                    txt = line.replace("[plugins]", "").strip()
+                    if "Already up to date" in txt or "already up to date" in txt.lower():
+                        pull_rows.append(bullet("插件仓库", "已是最新", code=False))
+                    elif "file changed" in txt or "files changed" in txt:
+                        pull_rows.append(bullet("插件仓库", "已更新", code=False))
+                    else:
+                        pull_rows.append(bullet("插件仓库", txt, code=False))
+            if not pull_rows:
+                pull_rows.append(bullet("结果", "已是最新", code=False))
+
+            secs = [section("仓库状态", pull_rows)]
             if reload_results:
-                secs.append(section(f"自动重载 ({len(changed)} 个插件)", reload_results))
-            elif ok:
-                secs.append(section("插件", ["无变更，无需重载。"]))
+                secs.append(section(f"自动重载 · {len(changed)} 个插件", reload_results))
+            elif ok and not changed:
+                secs.append(section("插件", ["无文件变更，无需重载。"]))
+
             footer = None
             if ok and not changed:
                 footer = f"<i>如有核心代码变更，请执行 <code>{escape(self.config.cmd_prefix)}restart</code></i>"
+
             if rt:
                 await self.edit_message_by_id(rt, panel("TG-Radar · 更新" + ("完成" if ok else "失败"), secs, footer))
         elif job.kind == "restart_services" and rt:
