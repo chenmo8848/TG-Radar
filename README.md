@@ -1,17 +1,21 @@
 <div align="center">
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:1a1b27,50:0d1117,100:161b22&height=120&section=header&fontSize=0" width="100%"/>
+
 # ⚡ TG-Radar
-**Telegram 关键词监控系统**
-全解耦插件架构 · 双进程分离 · 事件驱动同步
+
+<a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=18&duration=3000&pause=1000&color=58A6FF&center=true&vCenter=true&repeat=true&width=460&height=30&lines=Telegram+Keyword+Monitoring+System" alt="Typing SVG" /></a>
 
 <br/>
 
-[![Version](https://img.shields.io/badge/v6.0-58a6ff?style=flat-square&label=version)](https://github.com/chenmo8848/TG-Radar)
-[![Python](https://img.shields.io/badge/3.10+-3776AB?style=flat-square&logo=python&logoColor=white&label=python)](https://python.org)
-[![Telethon](https://img.shields.io/badge/async-26A5E4?style=flat-square&logo=telegram&logoColor=white&label=telethon)](https://github.com/LonamiWebs/Telethon)
+[![Version](https://img.shields.io/badge/v6.0-58a6ff?style=flat-square&label=version)](https://github.com/chenmo8848/TG-Radar)&nbsp;
+[![Python](https://img.shields.io/badge/3.10+-3776AB?style=flat-square&logo=python&logoColor=white&label=python)](https://python.org)&nbsp;
+[![Telethon](https://img.shields.io/badge/async-26A5E4?style=flat-square&logo=telegram&logoColor=white&label=telethon)](https://github.com/LonamiWebs/Telethon)&nbsp;
 [![License](https://img.shields.io/badge/MIT-3da639?style=flat-square&label=license)](LICENSE)
-[![Last Commit](https://img.shields.io/github/last-commit/chenmo8848/TG-Radar?style=flat-square&color=8b949e)](https://github.com/chenmo8848/TG-Radar/commits)
 
-[**快速开始**](#-快速开始) · [**架构**](#-架构) · [**插件系统**](#-插件系统) · [**命令手册**](#%EF%B8%8F-命令手册) · [**📦 插件仓库 →**](https://github.com/chenmo8848/TG-Radar-Plugins)
+<br/>
+
+[**快速开始**](#-快速开始) · [**核心特性**](#-核心特性) · [**插件系统**](#-插件系统) · [**命令手册**](#%EF%B8%8F-命令手册) · [📦 **插件仓库 →**](https://github.com/chenmo8848/TG-Radar-Plugins)
 
 </div>
 
@@ -24,7 +28,8 @@ bash <(curl -sL https://raw.githubusercontent.com/chenmo8848/TG-Radar/main/insta
 ```
 
 > [!TIP]
-> 全新 VPS（Ubuntu / Debian）以 root 执行即可。自动完成：`安装依赖` → `拉取仓库` → `创建环境` → `Telegram 授权` → `首次同步` → `启动服务`
+> 全新 VPS（Ubuntu / Debian）以 root 执行即可，自动完成全部流程：
+> `安装依赖` → `拉取仓库` → `创建环境` → `Telegram 授权` → `首次同步` → `启动服务`
 
 <details>
 <summary>📋 <b>手动部署</b></summary>
@@ -44,26 +49,21 @@ systemctl start tg-radar-admin tg-radar-core
 
 ## 🏗 架构
 
-```mermaid
-graph LR
-    subgraph A["🔧 Admin"]
-        A1[收藏夹命令] --> A2[Plugin Manager] --> A3[CommandBus → Executor]
-    end
-    subgraph C["📡 Core"]
-        C1[全量消息] --> C2[Plugin Manager] --> C3[规则匹配 → 告警]
-    end
-    DB[(SQLite WAL)]
-    A <--> DB <--> C
-    A -.->|SIGUSR1| C
-    style A fill:#161b22,stroke:#58a6ff,color:#c9d1d9
-    style C fill:#161b22,stroke:#3fb950,color:#c9d1d9
+```
+  ┌─────────────── Admin 进程 ───────────────┐     ┌──────────── Core 进程 ────────────┐
+  │                                           │     │                                   │
+  │  收藏夹命令 → PluginManager → CommandBus  │     │  全量消息 → PluginManager → 告警  │
+  │                               ↓           │     │                                   │
+  │                          Scheduler        │     │  关键词匹配（懒加载 · 并行钩子）  │
+  │                               ↓           │     │                                   │
+  │                           Executor        │     │  99% 消息零 API 开销跳过          │
+  │                                           │     │                                   │
+  └──────────────┬────────────────────────────┘     └────────────────┬──────────────────┘
+                 │                                                   │
+                 └──────────── SQLite WAL · SIGUSR1 ────────────────┘
 ```
 
-| | Admin 进程 | Core 进程 |
-|:--|:--|:--|
-| **职责** | 命令交互 · 后台任务 · 调度 | 全量消息监听 · 告警发送 |
-| **Client** | 单 TelegramClient | 单 TelegramClient |
-| **通信** | SQLite WAL 读写 | SQLite WAL 读写 + SIGUSR1 热重载 |
+> **Admin** 处理命令与后台任务，**Core** 监听消息并发送告警。双进程通过 SQLite 共享数据，SIGUSR1 信号触发热重载。
 
 ---
 
@@ -71,19 +71,21 @@ graph LR
 
 |  | 特性 | 说明 |
 |:--|:--|:--|
-| 🧩 | **全解耦插件** | 所有业务功能为独立插件，独立配置 / 日志 / 生命周期 |
-| ⚡ | **高性能** | 99% 消息零 API 调用跳过，命中后才懒加载，钩子并行执行 |
-| 🔄 | **三层同步** | 实时（分组事件 ~3s）· 手动（`-sync`）· 定时（每日） |
-| 🛡 | **稳定保障** | Session 自愈 · 错误熔断 · 异常隔离 · 独立日志 |
-| 🔌 | **Plugin SDK** | `from tgr.plugin_sdk import PluginContext` 一行开发 |
-| 🔥 | **热重载** | `-reload name` 秒级生效，`-update` 自动检测变更并重载 |
+| 🧩 | **全解耦插件** | 所有功能为独立插件，独立配置 `configs/name.json`、独立日志、独立生命周期 |
+| ⚡ | **高性能** | 预检前置 → 99% 消息零 API 调用跳过，命中后懒加载，钩子 `asyncio.gather` 并行 |
+| 🔄 | **三层同步** | 🟢 实时（分组变动事件 ~3s） · 🔵 手动（`-sync`） · ⚪ 定时（每日自动） |
+| 🛡 | **稳定保障** | Session 自愈 · 错误熔断（连续失败自动停用） · 异常隔离不影响其他插件 |
+| 🔌 | **Plugin SDK** | `from tgr.plugin_sdk import PluginContext` — 一行 import 开发插件 |
+| 🔥 | **热重载** | `-reload name` 秒级生效 · `-update` 自动检测变更文件并重载 |
+| 📡 | **转发识别** | 转发群消息到收藏夹 → 自动回复群 ID + 快捷操作命令 |
 
 ---
 
 ## 🧩 插件系统
 
 > [!NOTE]
-> 核心只提供基础设施，所有业务功能均为独立插件。完整文档 → [**TG-Radar-Plugins**](https://github.com/chenmo8848/TG-Radar-Plugins)
+> 核心只提供基础设施，所有业务功能均为可热重载的独立插件。
+> 完整开发文档 → [**TG-Radar-Plugins**](https://github.com/chenmo8848/TG-Radar-Plugins)
 
 | 插件 | 类型 | 功能 | 配置 |
 |:--|:--|:--|:--|
@@ -92,7 +94,7 @@ graph LR
 | `folders` | Admin | folders · rules · enable · disable | — |
 | `rules` | Admin | addrule · setrule · delrule · setnotify · setalert · setprefix | — |
 | `routes` | Admin | routes · addroute · delroute · sync · routescan | `auto_sync_enabled/time` |
-| `system` | Admin | restart · update（自动重载变更插件） | `restart_delay_seconds` |
+| `system` | Admin | restart · update | `restart_delay_seconds` |
 | `chatinfo` | Admin | 转发识别群 ID · 分组变动实时同步 | — |
 | `keyword_monitor` | Core | 关键词匹配 · 告警发送 | `bot_filter` `max_preview_length` |
 
@@ -120,23 +122,8 @@ def setup(ctx: PluginContext):
 | 任务 | `ctx.bus.submit_job(kind, ...)` | 后台任务 |
 | 日志 | `ctx.log.info / warning / error` | 插件独立日志 |
 | 事件 | `ctx.emit(event, data)` / `@ctx.on(event)` | 事件总线 |
-| 注册 | `@ctx.command` / `@ctx.hook` / `@ctx.cleanup` / `@ctx.healthcheck` | 装饰器注册 |
-| 工具 | `ctx.client` / `ctx.reply(event, text)` | Telethon 客户端 / 统一回复 |
-</details>
-
-<details>
-<summary>♻️ <b>插件生命周期</b></summary>
-
-```mermaid
-stateDiagram-v2
-    [*] --> Running: setup() 成功
-    [*] --> Failed: 加载异常
-    Running --> Fused: 连续失败 N 次
-    Running --> Disabled: -plugindisable
-    Fused --> Running: -reload
-    Disabled --> Running: -pluginenable
-    Failed --> Running: 修复 + -reload
-```
+| 注册 | `@ctx.command` / `@ctx.hook` / `@ctx.cleanup` / `@ctx.healthcheck` | 装饰器 |
+| 工具 | `ctx.client` / `ctx.reply(event, text)` | Telethon / 回复 |
 </details>
 
 ---
@@ -179,6 +166,9 @@ stateDiagram-v2
 | `-delrule 分组 规则 [词...]` | 删除 |
 | `-setnotify / -setalert ID/off` | 通知 / 告警频道 |
 | `-setprefix 前缀` | 修改前缀 |
+
+> [!TIP]
+> 支持正则：`-addrule 分组 规则A "台(?:[1-9]|[一二三四五六七八九])"`
 </details>
 
 <details>
@@ -187,7 +177,7 @@ stateDiagram-v2
 | 命令 | 说明 |
 |:--|:--|
 | `-sync` | 手动同步 |
-| `-routes / -addroute / -delroute` | 归纳规则管理 |
+| `-routes / -addroute / -delroute` | 归纳规则 |
 | `-routescan` | 手动扫描 |
 </details>
 
@@ -218,7 +208,7 @@ stateDiagram-v2
 ```
 TR              交互菜单          TR logs admin   Admin 日志
 TR status       服务状态          TR logs core    Core 日志
-TR restart      重启双服务        TR update       拉取更新
+TR restart      重启              TR update       拉取更新
 TR doctor       环境自检          TR reauth       重新授权
 ```
 
@@ -226,17 +216,28 @@ TR doctor       环境自检          TR reauth       重新授权
 
 ## 🔍 获取群 ID
 
-**转发一条群消息到收藏夹**，系统自动回复来源群 ID 和快捷操作命令。
+**转发一条群消息到收藏夹**，自动回复群 ID + 快捷操作：
+
+```
+TG-Radar · 群 ID 识别
+
+来源信息
+· 名称：XXX 交流群
+· ID：-1001234567890
+· 类型：超级群
+
+快捷操作
+  设为告警频道: -setalert -1001234567890
+  设为通知频道: -setnotify -1001234567890
+```
 
 > [!IMPORTANT]
-> 请转发**普通用户**发的消息。Bot 消息会识别出 Bot 本身而非所在群。
+> 请转发**普通用户**发的消息。Bot 消息会识别为 Bot 本身。
 
 ---
 
-## 📂 项目结构
-
 <details>
-<summary>展开</summary>
+<summary>📂 <b>项目结构</b></summary>
 
 ```
 TG-Radar/
@@ -245,7 +246,7 @@ TG-Radar/
 ├── runtime/
 │   ├── radar.db             SQLite WAL
 │   ├── sessions/            Telegram session
-│   └── logs/                日志（含 plugins/ 子目录）
+│   └── logs/                日志 + plugins/ 子目录
 ├── src/tgr/
 │   ├── plugin_sdk.py        ★ 插件 SDK
 │   ├── core/plugin_system.py  插件引擎
@@ -277,7 +278,7 @@ TG-Radar/
 
 ## ⚠️ 免责声明
 
-本项目仅供**学习与技术研究**用途。使用者须确保行为符合所在地法律法规。开发者不对因使用本工具导致的任何损失承担责任。严禁用于未经授权的监控、骚扰、诈骗等非法活动。所有数据仅存储在用户自己的设备上。使用即表示同意上述条款。
+本项目仅供**学习与技术研究**用途。使用者须确保行为符合所在地法律法规。开发者不对因使用本工具导致的任何损失承担责任。严禁用于未经授权的监控、骚扰、诈骗等非法活动。所有数据仅存储在用户设备上，不传输至第三方。使用即表示同意上述条款。
 
 ---
 
@@ -286,5 +287,7 @@ TG-Radar/
 [**Core**](https://github.com/chenmo8848/TG-Radar) · [**Plugins**](https://github.com/chenmo8848/TG-Radar-Plugins)
 
 <sub>Built with Telethon · SQLite WAL · APScheduler</sub>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:1a1b27,50:0d1117,100:161b22&height=80&section=footer&fontSize=0" width="100%"/>
 
 </div>
