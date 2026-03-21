@@ -51,8 +51,8 @@ esac
 
 if [ "$is_remote_bootstrap" -eq 1 ] || [ ! -f "$SCRIPT_DIR/requirements.txt" ] || [ ! -d "$SCRIPT_DIR/src/tgr" ]; then
   line
-  printf "%b\n" "${B}TG-Radar v6 · 一键安装${C0}"
-  printf "%b\n" "${DIM}全解耦插件架构 · 双进程分离 · PagerMaid 风格插件管理${C0}"
+  printf "%b\n" "${B}TG-Radar · 一键部署${C0}"
+  printf "%b\n" "${DIM}全解耦插件架构 · 双进程分离 · 事件驱动${C0}"
   line
   step "安装系统依赖"
   apt-get update -y >/dev/null 2>&1
@@ -71,8 +71,8 @@ PY="$VENV_DIR/bin/python3"
 PIP="$VENV_DIR/bin/pip"
 
 line
-printf "%b\n" "${B}TG-Radar v6 · 一键安装${C0}"
-printf "%b\n" "${DIM}全解耦插件架构 · 双进程分离 · PagerMaid 风格插件管理${C0}"
+printf "%b\n" "${B}TG-Radar · 一键部署${C0}"
+printf "%b\n" "${DIM}全解耦插件架构 · 双进程分离 · 事件驱动${C0}"
 line
 
 step "安装系统依赖"
@@ -158,7 +158,7 @@ ok "systemd 双服务已写入"
 step "检查 Telegram 会话"
 if [ ! -f "$APP_DIR/runtime/sessions/tg_radar_admin.session" ] || \
    [ ! -f "$APP_DIR/runtime/sessions/tg_radar_core.session" ] || \
-   [ ! -f "$APP_DIR/runtime/sessions/tg_radar_admin_worker.session" ]; then
+   [ ! -f "$APP_DIR/runtime/sessions/tg_radar_core.session" ]; then
   echo ""
   line
   printf "%b\n" "${B}首次授权 Telegram 账号${C0}"
@@ -181,7 +181,7 @@ systemctl enable --now tg-radar-admin tg-radar-core >/dev/null 2>&1
 ok "Admin / Core 双服务已启动"
 
 line
-printf "%b\n" "${B}TG-Radar v6 · 安装完成 ✔${C0}"
+printf "%b\n" "${B}TG-Radar · 部署完成 ✔${C0}"
 line
 echo ""
 printf "  项目目录   %s\n" "$APP_DIR"

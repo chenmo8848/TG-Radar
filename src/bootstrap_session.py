@@ -1,60 +1,47 @@
 from __future__ import annotations
-
-import asyncio
-import shutil
+import asyncio, shutil
 from pathlib import Path
-
 from telethon import TelegramClient
-
 from tgr.compat import seed_db_from_legacy_config_if_needed
 from tgr.config import load_config, sync_snapshot_to_config
 from tgr.db import RadarDB
 from tgr.logger import setup_logger
 
-
 async def main() -> None:
-    work_dir = Path(__file__).resolve().parent.parent
-    config = load_config(work_dir)
-    logger = setup_logger("tg-radar-bootstrap", config.logs_dir / "bootstrap.log")
-    db = RadarDB(config.db_path)
-    seed_db_from_legacy_config_if_needed(work_dir, db)
-    sync_snapshot_to_config(work_dir, db)
+    wd = Path(__file__).resolve().parent.parent
+    cfg = load_config(wd)
+    log = setup_logger("tg-radar-bootstrap", cfg.logs_dir / "bootstrap.log")
+    db = RadarDB(cfg.db_path)
+    seed_db_from_legacy_config_if_needed(wd, db)
+    sync_snapshot_to_config(wd, db)
+    cfg.sessions_dir.mkdir(parents=True, exist_ok=True)
+    tmp = cfg.sessions_dir / "tg_radar_bootstrap"
 
-    config.sessions_dir.mkdir(parents=True, exist_ok=True)
-    temp_session = config.sessions_dir / "tg_radar_bootstrap"
+    print("\n\033[1mTG-Radar · Telegram 授权\033[0m")
+    print("─" * 50)
+    print("请按提示输入手机号、验证码、二步验证密码（如有）。\n")
 
-    print("\nTG-Radar 首次授权向导")
-    print("─" * 64)
-    print("接下来 Telethon 会要求输入手机号、登录验证码，以及二步验证密码（如已开启）。")
-    print("授权完成后，Admin / Core 会直接复用生成的 session，不需要你再手工复制或编辑配置文件。\n")
-
-    async with TelegramClient(str(temp_session), config.api_id, config.api_hash) as client:
+    async with TelegramClient(str(tmp), cfg.api_id, cfg.api_hash) as client:
         await client.start()
         me = await client.get_me()
-        display_name = getattr(me, "username", None) or getattr(me, "first_name", "unknown")
-        logger.info("authorized as %s", display_name)
-        print(f"已授权账号：{display_name}\n")
+        name = getattr(me, "username", None) or getattr(me, "first_name", "?")
+        log.info("authorized as %s", name)
+        print(f"\033[32m✔\033[0m 已授权: {name}\n")
 
-    source = temp_session.with_suffix(".session")
-    for target in [
-        config.admin_session.with_suffix(".session"),
-        config.admin_worker_session.with_suffix(".session"),
-        config.core_session.with_suffix(".session"),
-    ]:
-        shutil.copy2(source, target)
+    src = tmp.with_suffix(".session")
+    targets = [cfg.session_path.with_suffix(".session"), cfg.core_session.with_suffix(".session")]
+    for t in targets:
+        shutil.copy2(src, t)
+    for f in [src, tmp.with_suffix(".session-journal"), tmp.with_suffix(".session-shm"), tmp.with_suffix(".session-wal")]:
+        try: f.unlink(missing_ok=True)
+        except: pass
+    # Clean legacy worker session
+    (cfg.sessions_dir / "tg_radar_admin_worker.session").unlink(missing_ok=True)
 
-    for leftover in [source, temp_session.with_suffix(".session-journal"), temp_session.with_suffix(".session-shm"), temp_session.with_suffix(".session-wal")]:
-        try:
-            leftover.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    print("Session 已写入：")
-    print(f"- {config.admin_session.with_suffix('.session')}")
-    print(f"- {config.admin_worker_session.with_suffix('.session')}")
-    print(f"- {config.core_session.with_suffix('.session')}")
-    print("\n授权完成。现在可以直接使用 TR，或在 Telegram 收藏夹发送命令。\n")
-
+    print("Session 已写入:")
+    for t in targets:
+        print(f"  {t}")
+    print("\n\033[32m✔\033[0m 授权完成。可以启动服务了。\n")
 
 if __name__ == "__main__":
     asyncio.run(main())

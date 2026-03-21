@@ -32,8 +32,13 @@ class RouteReport:
     errors: dict[str, str]
 
 
-async def _small_pause(config: Any) -> None:
+async def _pause(config: Any) -> None:
     await asyncio.sleep(random.uniform(config.batch_sleep_min_seconds, config.batch_sleep_max_seconds))
+
+
+async def _yield() -> None:
+    """Yield control to event loop so commands stay responsive during sync."""
+    await asyncio.sleep(0)
 
 
 async def _load_group_dialogs(client: TelegramClient, config: Any) -> tuple[list[Any], dict[int, Any]]:
@@ -46,8 +51,11 @@ async def _load_group_dialogs(client: TelegramClient, config: Any) -> tuple[list
         dialogs.append(dialog)
         by_id[int(dialog.id)] = dialog
         count += 1
+        # PERF: yield every 10 dialogs to keep event loop responsive
+        if count % 10 == 0:
+            await _yield()
         if count % max(20, int(config.sync_batch_size)) == 0:
-            await _small_pause(config)
+            await _pause(config)
     return dialogs, by_id
 
 
@@ -105,29 +113,22 @@ async def sync_dialog_folders(client: TelegramClient, db: RadarDB, config: Any) 
                     elif folder.broadcasts and dialog.is_channel and not dialog.is_group:
                         target_ids.add(int(dialog.id))
 
-            target_ids = target_ids - exclude_ids
-            items: list[tuple[int, str | None]] = []
-            for chat_id in sorted(target_ids):
-                dialog = all_dialog_by_id.get(chat_id)
-                chat_title = None
-                if dialog is not None:
-                    chat_title = getattr(dialog, "name", None) or getattr(dialog.entity, "title", None)
-                items.append((chat_id, chat_title))
+            target_ids -= exclude_ids
+            items = [(cid, (getattr(all_dialog_by_id.get(cid), "name", None) or getattr(getattr(all_dialog_by_id.get(cid), "entity", None), "title", None)) if cid in all_dialog_by_id else None) for cid in sorted(target_ids)]
 
-            old_rows = conn.execute(
-                "SELECT chat_id FROM system_cache WHERE folder_name=? ORDER BY chat_id",
-                (title,),
-            ).fetchall()
-            old_ids = [int(row["chat_id"]) for row in old_rows]
-            new_ids = [int(chat_id) for chat_id, _ in items]
-            if old_ids != new_ids:
+            old_rows = conn.execute("SELECT chat_id FROM system_cache WHERE folder_name=? ORDER BY chat_id", (title,)).fetchall()
+            if [int(r["chat_id"]) for r in old_rows] != [c for c, _ in items]:
                 changed = True
             db.replace_folder_cache(title, items, conn=conn)
             active[title] = len(items)
 
+            # PERF: yield every 3 folders
+            if index % 3 == 0:
+                await _yield()
+
         for row in db_folders:
-            folder_id = row["folder_id"]
-            if folder_id is not None and folder_id not in current_ids:
+            fid = row["folder_id"]
+            if fid is not None and fid not in current_ids:
                 deleted.append(row["folder_name"])
                 db.delete_folder(row["folder_name"], conn=conn)
                 changed = True
@@ -135,14 +136,7 @@ async def sync_dialog_folders(client: TelegramClient, db: RadarDB, config: Any) 
         if changed:
             db.bump_revision(conn)
 
-    return SyncReport(
-        discovered=discovered,
-        renamed=renamed,
-        deleted=deleted,
-        active=active,
-        has_changes=changed,
-        elapsed_seconds=(datetime.now() - started).total_seconds(),
-    )
+    return SyncReport(discovered=discovered, renamed=renamed, deleted=deleted, active=active, has_changes=changed, elapsed_seconds=(datetime.now() - started).total_seconds())
 
 
 async def scan_auto_routes(client: TelegramClient, db: RadarDB, config: Any) -> RouteReport:
@@ -161,11 +155,13 @@ async def scan_auto_routes(client: TelegramClient, db: RadarDB, config: Any) -> 
     async for d in client.iter_dialogs(ignore_pinned=True):
         if not (d.is_group or d.is_channel):
             continue
-        name = utils.get_display_name(d.entity) or getattr(d, "name", "") or getattr(d, "title", "") or ""
+        name = utils.get_display_name(d.entity) or getattr(d, "name", "") or ""
         all_dialogs.append({"id": int(d.id), "name": name})
         count += 1
+        if count % 10 == 0:
+            await _yield()
         if count % max(10, int(config.route_batch_size)) == 0:
-            await _small_pause(config)
+            await _pause(config)
 
     for row in routes:
         folder_name = str(row["folder_name"])
@@ -173,7 +169,7 @@ async def scan_auto_routes(client: TelegramClient, db: RadarDB, config: Any) -> 
         try:
             pattern = re.compile(pattern_str, re.IGNORECASE)
         except re.error as exc:
-            report.errors[folder_name] = f"invalid route regex: {exc}"
+            report.errors[folder_name] = f"正则无效: {exc}"
             continue
 
         matched_ids = [d["id"] for d in all_dialogs if pattern.search(d["name"])]
@@ -208,13 +204,12 @@ async def scan_auto_routes(client: TelegramClient, db: RadarDB, config: Any) -> 
             report.already_in[folder_name] = already
         if not to_add:
             continue
-        if folder_obj is not None and len(current_ids) + len(to_add) > 100:
-            allowed = max(0, 100 - len(current_ids))
-            to_add = to_add[:allowed]
+        if folder_obj and len(current_ids) + len(to_add) > 100:
+            to_add = to_add[:max(0, 100 - len(current_ids))]
         if not to_add:
             continue
         db.upsert_route_task(folder_name, folder_id, to_add)
         report.queued[folder_name] = len(to_add)
-        await _small_pause(config)
+        await _pause(config)
 
     return report

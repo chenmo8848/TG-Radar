@@ -27,19 +27,18 @@ class RuntimeState:
     started_at: datetime
 
 
-def compile_target_map(raw_target_map: dict[int, list[dict]], logger) -> dict[int, list[dict]]:
+def compile_target_map(raw: dict[int, list[dict]], logger) -> dict[int, list[dict]]:
     compiled: dict[int, list[dict]] = {}
-    for chat_id, tasks in raw_target_map.items():
+    for chat_id, tasks in raw.items():
         for task in tasks:
-            compiled_rules: list[tuple[str, re.Pattern[str]]] = []
+            rules = []
             for rule_name, pattern in task["rules"]:
                 try:
-                    compiled_rules.append((rule_name, re.compile(pattern, re.IGNORECASE)))
+                    rules.append((rule_name, re.compile(pattern, re.IGNORECASE)))
                 except re.error as exc:
-                    logger.warning("invalid regex skipped: folder=%s rule=%s err=%s", task["folder_name"], rule_name, exc)
-            if not compiled_rules:
-                continue
-            compiled.setdefault(chat_id, []).append({"folder_name": task["folder_name"], "alert_channel": task["alert_channel"], "rules": compiled_rules})
+                    logger.warning("正则无效 folder=%s rule=%s: %s", task["folder_name"], rule_name, exc)
+            if rules:
+                compiled.setdefault(chat_id, []).append({"folder_name": task["folder_name"], "alert_channel": task["alert_channel"], "rules": rules})
     return compiled
 
 
@@ -47,7 +46,7 @@ class CoreApp:
     def __init__(self, work_dir: Path) -> None:
         self.work_dir = work_dir
         self.config = load_config(work_dir)
-        self.logger = setup_logger("tr-manager-core", self.config.logs_dir / "core.log")
+        self.logger = setup_logger("tg-radar-core", self.config.logs_dir / "core.log")
         self.db = RadarDB(self.config.db_path)
         seed_db_from_legacy_config_if_needed(work_dir, self.db)
         self.stop_event = asyncio.Event()
@@ -57,16 +56,16 @@ class CoreApp:
         self.state: RuntimeState | None = None
 
     async def reload_runtime_state(self) -> RuntimeState:
-        raw_target_map, valid_rules_count = self.db.build_target_map(self.config.global_alert_channel_id)
-        compiled = compile_target_map(raw_target_map, self.logger)
-        previous = self.state.started_at if self.state else datetime.now()
-        self.state = RuntimeState(target_map=compiled, valid_rules_count=valid_rules_count, revision=self.db.get_revision(), started_at=previous)
+        raw, count = self.db.build_target_map(self.config.global_alert_channel_id)
+        compiled = compile_target_map(raw, self.logger)
+        prev = self.state.started_at if self.state else datetime.now()
+        self.state = RuntimeState(target_map=compiled, valid_rules_count=count, revision=self.db.get_revision(), started_at=prev)
         return self.state
 
     async def run(self) -> None:
         self.config.sessions_dir.mkdir(parents=True, exist_ok=True)
-        if not (self.config.core_session.with_suffix(".session")).exists():
-            raise FileNotFoundError("Missing runtime/sessions/tg_radar_core.session. Run bootstrap_session.py first.")
+        if not self.config.core_session.with_suffix(".session").exists():
+            raise FileNotFoundError("缺少 core session，请执行 TR reauth")
         lock_file = self.work_dir / ".core.lock"
         lock_fd = os.open(lock_file, os.O_CREAT | os.O_RDWR)
         try:
@@ -74,56 +73,53 @@ class CoreApp:
                 import fcntl
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except Exception as exc:
-            raise RuntimeError("tg-radar-core is already running") from exc
+            raise RuntimeError("Core 进程已在运行中") from exc
 
-        # Write PID file for reload signal targeting
         pid_file = self.config.runtime_dir / "core.pid"
         pid_file.write_text(str(os.getpid()))
 
         await self.reload_runtime_state()
         self.plugin_manager.load_core_plugins()
         await self.plugin_manager.run_healthchecks()
+
         async with TelegramClient(str(self.config.core_session), self.config.api_id, self.config.api_hash) as client:
             self.client = client
             client.parse_mode = "html"
-            self.logger.info("core service started, version=%s, revision=%s, chats=%s, rules=%s", __version__, self.state.revision, len(self.state.target_map), self.state.valid_rules_count)
-            self.db.log_event("INFO", "CORE", f"TR 管理器 Core 已启动 v{__version__}")
+            self.logger.info("Core 已启动 v%s | revision=%s chats=%s rules=%s", __version__, self.state.revision, len(self.state.target_map), self.state.valid_rules_count)
+            self.db.log_event("INFO", "CORE", f"Core 已启动 v{__version__}")
 
             @client.on(events.NewMessage)
-            async def message_handler(event: events.NewMessage.Event) -> None:
+            async def on_message(event) -> None:
                 try:
                     await self.plugin_manager.process_core_message(self, event)
                 except Exception as exc:
-                    self.logger.exception("message handler error: %s", exc)
+                    self.logger.exception("消息处理异常: %s", exc)
                     self.db.log_event("ERROR", "CORE_HANDLER", str(exc))
 
-            async def perform_reload(trigger: str) -> None:
+            async def do_reload(trigger: str) -> None:
                 await self.reload_runtime_state()
-                self.logger.info("core reloaded trigger=%s revision=%s chats=%s rules=%s", trigger, self.state.revision, len(self.state.target_map), self.state.valid_rules_count)
+                self.logger.info("Core 重载 trigger=%s revision=%s chats=%s rules=%s", trigger, self.state.revision, len(self.state.target_map), self.state.valid_rules_count)
                 await self.plugin_manager.run_healthchecks()
                 self.db.log_event("INFO", "CORE_RELOAD", f"trigger={trigger}; revision={self.state.revision}")
 
-            async def signal_reload_watcher() -> None:
+            async def signal_watcher() -> None:
                 while not self.stop_event.is_set():
                     await self.reload_event.wait()
                     self.reload_event.clear()
                     try:
-                        await perform_reload("signal")
+                        await do_reload("signal")
                     except Exception as exc:
-                        self.logger.exception("signal reload error: %s", exc)
-                        self.db.log_event("ERROR", "CORE_RELOAD", str(exc))
+                        self.logger.exception("信号重载异常: %s", exc)
 
-            async def revision_fallback_watcher() -> None:
-                poll_interval = self.config.revision_poll_seconds
+            async def revision_watcher() -> None:
+                interval = self.config.revision_poll_seconds
                 while not self.stop_event.is_set():
                     try:
-                        latest = self.db.get_revision()
-                        if latest != self.state.revision:
-                            await perform_reload("fallback_poll")
+                        if self.db.get_revision() != self.state.revision:
+                            await do_reload("poll")
                     except Exception as exc:
-                        self.logger.exception("revision fallback watcher error: %s", exc)
-                        self.db.log_event("ERROR", "CORE_WATCHER", str(exc))
-                    await asyncio.sleep(poll_interval)
+                        self.logger.exception("轮询重载异常: %s", exc)
+                    await asyncio.sleep(interval)
 
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -137,24 +133,17 @@ class CoreApp:
                 except NotImplementedError:
                     pass
 
-            background = [
-                asyncio.create_task(signal_reload_watcher()),
-                asyncio.create_task(client.run_until_disconnected()),
-                asyncio.create_task(self.stop_event.wait()),
-            ]
-            # FIX BUG-05: only start fallback watcher if revision_poll_seconds > 0
+            bg = [asyncio.create_task(signal_watcher()), asyncio.create_task(client.run_until_disconnected()), asyncio.create_task(self.stop_event.wait())]
             if self.config.revision_poll_seconds > 0:
-                background.append(asyncio.create_task(revision_fallback_watcher()))
-            _done, pending = await asyncio.wait(set(background), return_when=asyncio.FIRST_COMPLETED)
+                bg.append(asyncio.create_task(revision_watcher()))
+            _, pending = await asyncio.wait(set(bg), return_when=asyncio.FIRST_COMPLETED)
             self.stop_event.set()
             self.reload_event.set()
-            for task in pending:
-                task.cancel()
+            for t in pending:
+                t.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
-            self.logger.info("TR 管理器 Core stopping")
-            self.db.log_event("INFO", "CORE", "TR 管理器 Core 正在停止")
-
-            # Clean PID file
+            self.logger.info("Core 正在关闭")
+            self.db.log_event("INFO", "CORE", "Core 正在关闭")
             try:
                 pid_file.unlink(missing_ok=True)
             except Exception:
@@ -162,5 +151,4 @@ class CoreApp:
 
 
 async def run(work_dir: Path) -> None:
-    app = CoreApp(work_dir)
-    await app.run()
+    await CoreApp(work_dir).run()

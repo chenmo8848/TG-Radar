@@ -78,8 +78,8 @@ SERVICE
 
 status_view() {
   line
-  printf "%b\n" "${B}TG-Radar v6 · 终端控制台${C0}"
-  printf "%b\n" "${DIM}全解耦插件架构 · Admin + Core 双进程${C0}"
+  printf "%b\n" "${B}TG-Radar · 控制台${C0}"
+  printf "%b\n" "${DIM}全解耦插件架构 · 双进程分离${C0}"
   line
   printf "项目目录  %s\n" "$APP_DIR"
   printf "插件目录  %s\n" "$PLUGINS_REPO_DIR"
@@ -112,7 +112,7 @@ show_logs() {
 
 doctor() {
   line
-  printf "%b\n" "${B}TG-Radar v6 · 环境自检${C0}"
+  printf "%b\n" "${B}TG-Radar · 环境自检${C0}"
   line
   [ -x "$VENV_PY" ] && ok "Python venv: $VENV_PY" || err "缺少 venv Python"
   [ -d "$SRC_DIR/tgr" ] && ok "源码目录: $SRC_DIR/tgr" || err "缺少 src/tgr"
@@ -121,7 +121,6 @@ doctor() {
   [ -f "$APP_DIR/runtime/radar.db" ] && ok "数据库: runtime/radar.db" || warn "数据库尚未生成"
   [ -f "$APP_DIR/runtime/sessions/tg_radar_admin.session" ] && ok "Admin session" || warn "缺少 admin session"
   [ -f "$APP_DIR/runtime/sessions/tg_radar_core.session" ] && ok "Core session" || warn "缺少 core session"
-  [ -f "$APP_DIR/runtime/sessions/tg_radar_admin_worker.session" ] && ok "Worker session" || warn "缺少 worker session"
   systemctl is-enabled "$ADMIN_SVC" >/dev/null 2>&1 && ok "$ADMIN_SVC 已启用" || warn "$ADMIN_SVC 未启用"
   systemctl is-enabled "$CORE_SVC" >/dev/null 2>&1 && ok "$CORE_SVC 已启用" || warn "$CORE_SVC 未启用"
   systemctl is-active "$ADMIN_SVC" >/dev/null 2>&1 && ok "$ADMIN_SVC 运行中" || warn "$ADMIN_SVC 未运行"
@@ -153,8 +152,8 @@ update_repo() {
 menu() {
   clear
   line
-  printf "%b\n" "${B}TG-Radar v6 · Terminal Radar${C0}"
-  printf "%b\n" "${DIM}全解耦插件架构 · 双进程分离 · PagerMaid 风格插件管理${C0}"
+  printf "%b\n" "${B}TG-Radar · Terminal Radar${C0}"
+  printf "%b\n" "${DIM}全解耦插件架构 · 双进程分离 · 事件驱动${C0}"
   line
   cat <<'MENU'
  1) 写入 / 刷新 systemd 双服务
@@ -208,7 +207,7 @@ case "${1:-menu}" in
     done ;;
   *)
     line
-    printf "%b\n" "${B}TG-Radar v6 · 终端管理器${C0}"
+    printf "%b\n" "${B}TG-Radar · 终端管理器${C0}"
     line
     cat <<USAGE
 用法:

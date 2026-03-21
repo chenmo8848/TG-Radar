@@ -21,7 +21,6 @@ class AdminScheduler:
         self.wakeup = asyncio.Event()
         self.aps: AsyncIOScheduler | None = None
 
-    # FIX BUG-07: always access through app
     @property
     def db(self):
         return self.app.db
@@ -30,19 +29,21 @@ class AdminScheduler:
     def config(self):
         return self.app.config
 
+    def _plugin_cfg(self, plugin_name: str, key: str, default: Any) -> Any:
+        """Read a value from a plugin's config file."""
+        cfg_file = self.app.plugin_manager.get_plugin_config_file(plugin_name, {})
+        return cfg_file.get(key, default)
+
     async def run(self) -> None:
         self.aps = AsyncIOScheduler()
         self._install_daily_jobs()
         self.aps.start()
-        tasks = [
-            asyncio.create_task(self._dispatcher_loop()),
-            asyncio.create_task(self._housekeeping_loop()),
-        ]
+        tasks = [asyncio.create_task(self._dispatcher_loop()), asyncio.create_task(self._housekeeping_loop())]
         await self.stop_event.wait()
-        for task in tasks:
-            task.cancel()
+        for t in tasks:
+            t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        if self.aps is not None:
+        if self.aps:
             try:
                 self.aps.shutdown(wait=False)
             except Exception:
@@ -51,69 +52,42 @@ class AdminScheduler:
             await asyncio.gather(*list(self.running_tasks), return_exceptions=True)
 
     def _install_daily_jobs(self) -> None:
-        if self.aps is None:
+        if not self.aps:
             return
-        if self.config.auto_sync_enabled:
-            hour, minute = [int(x) for x in self.config.auto_sync_time.split(":", 1)]
-            self.aps.add_job(
-                self._queue_daily_job,
-                CronTrigger(hour=hour, minute=minute),
-                kwargs={
-                    "kind": "sync_auto",
-                    "description": "自动同步",
-                    "priority": 90,
-                    "dedupe_key": "sync_auto",
-                },
-                id="daily_sync",
-                replace_existing=True,
-                coalesce=True,
-                max_instances=1,
-                misfire_grace_time=3600,
-            )
-        if self.config.auto_route_enabled:
-            hour, minute = [int(x) for x in self.config.auto_route_time.split(":", 1)]
-            self.aps.add_job(
-                self._queue_daily_job,
-                CronTrigger(hour=hour, minute=minute),
-                kwargs={
-                    "kind": "route_scan",
-                    "description": "自动收纳扫描",
-                    "priority": 95,
-                    "dedupe_key": "route_scan",
-                },
-                id="daily_route_scan",
-                replace_existing=True,
-                coalesce=True,
-                max_instances=1,
-                misfire_grace_time=3600,
-            )
+        # Read from routes plugin config (or defaults)
+        sync_on = self._plugin_cfg("routes", "auto_sync_enabled", True)
+        sync_t = str(self._plugin_cfg("routes", "auto_sync_time", "03:40"))
+        route_on = self._plugin_cfg("routes", "auto_route_enabled", True)
+        route_t = str(self._plugin_cfg("routes", "auto_route_time", "04:20"))
 
-    async def _queue_daily_job(self, *, kind: str, description: str, priority: int, dedupe_key: str) -> None:
-        jitter_seconds = 0
+        if sync_on:
+            h, m = self._parse_hm(sync_t, 3, 40)
+            self.aps.add_job(self._queue_daily, CronTrigger(hour=h, minute=m), kwargs={"kind": "sync_auto", "desc": "自动同步", "pri": 90, "dk": "sync_auto"}, id="daily_sync", replace_existing=True, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        if route_on:
+            h, m = self._parse_hm(route_t, 4, 20)
+            self.aps.add_job(self._queue_daily, CronTrigger(hour=h, minute=m), kwargs={"kind": "route_scan", "desc": "自动归纳", "pri": 95, "dk": "route_scan"}, id="daily_route", replace_existing=True, coalesce=True, max_instances=1, misfire_grace_time=3600)
+
+    @staticmethod
+    def _parse_hm(t: str, dh: int, dm: int) -> tuple[int, int]:
+        parts = t.split(":", 1)
+        try:
+            return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+        except Exception:
+            return dh, dm
+
+    async def _queue_daily(self, *, kind: str, desc: str, pri: int, dk: str) -> None:
+        jitter = 0
         if self.config.daily_jitter_minutes > 0:
-            jitter_seconds += random.randint(0, int(self.config.daily_jitter_minutes) * 60)
-
-        recent_cmd = time.monotonic() - self.app.last_command_ts
-        if recent_cmd < self.config.idle_grace_seconds:
-            jitter_seconds += int(self.config.idle_grace_seconds - recent_cmd)
-
-        heavy_busy = sum(
-            self.db.count_open_jobs(kind_name)
-            for kind_name in ("sync_manual", "sync_auto", "route_scan", "route_apply", "update_repo", "restart_services")
-        )
-        if heavy_busy > 0:
-            jitter_seconds += 180
-
-        result = self.app.command_bus.submit(
-            kind,
-            priority=priority,
-            dedupe_key=dedupe_key,
-            origin="scheduler",
-            visible=False,
-            delay_seconds=jitter_seconds,
-        )
-        if result.created:
-            self.db.log_event("INFO", "JOB_QUEUE", f"{description} 已排队，延迟 {jitter_seconds} 秒启动")
+            jitter += random.randint(0, self.config.daily_jitter_minutes * 60)
+        recent = time.monotonic() - self.app.last_command_ts
+        if recent < self.config.idle_grace_seconds:
+            jitter += int(self.config.idle_grace_seconds - recent)
+        busy = sum(self.db.count_open_jobs(k) for k in ("sync_manual", "sync_auto", "route_scan", "route_apply", "update_repo", "restart_services"))
+        if busy > 0:
+            jitter += 180
+        r = self.app.command_bus.submit(kind, priority=pri, dedupe_key=dk, origin="scheduler", visible=False, delay_seconds=jitter)
+        if r.created:
+            self.db.log_event("INFO", "JOB_QUEUE", f"{desc} 延迟 {jitter}s")
 
     def notify_new_job(self) -> None:
         self.wakeup.set()
@@ -121,11 +95,11 @@ class AdminScheduler:
     async def _dispatcher_loop(self) -> None:
         while not self.stop_event.is_set():
             if len(self.running_tasks) >= self.config.max_parallel_admin_jobs:
-                await self._wait_for_wakeup(self.config.scheduler_poll_seconds)
+                await self._wait(self.config.scheduler_poll_seconds)
                 continue
             job = self.db.claim_next_job()
             if job is None:
-                await self._wait_for_wakeup(self.config.scheduler_poll_seconds)
+                await self._wait(self.config.scheduler_poll_seconds)
                 continue
             task = asyncio.create_task(self._run_job(job))
             self.running_tasks.add(task)
@@ -136,12 +110,11 @@ class AdminScheduler:
         try:
             result = await self.executors.execute(job)
         except Exception as exc:
-            self.db.fail_job(job.id, str(exc), retry=False)
+            self.db.fail_job(job.id, str(exc))
             self.db.log_event("ERROR", "JOB_FAIL", f"{job.kind}#{job.id}: {exc}")
             await self.app.notify_job_failure(job, exc)
             self.notify_new_job()
             return
-
         if result.log_action:
             self.db.log_event(result.log_level, result.log_action, result.detail or result.summary)
         self.db.finish_job(job.id)
@@ -149,7 +122,7 @@ class AdminScheduler:
         await self.app.after_job(job, result)
         self.notify_new_job()
 
-    async def _wait_for_wakeup(self, timeout: float) -> None:
+    async def _wait(self, timeout: float) -> None:
         try:
             await asyncio.wait_for(self.wakeup.wait(), timeout=timeout)
         except asyncio.TimeoutError:

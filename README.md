@@ -1,130 +1,198 @@
-# TG-Radar v6.0.0
+<div align="center">
 
-Telegram 关键词监控系统，采用 PagerMaid-Pyro 风格的全解耦插件化架构。
+# TG-Radar
 
-## 架构概览
+**Telegram 关键词监控系统**
 
-```
-┌─────────────────────────────────────────────┐
-│               Admin 进程                      │
-│  Telegram 命令 → PluginManager → 调度器       │
-│                     ↓                         │
-│              CommandBus → Executor             │
-└─────────────────────────────────────────────┘
-        ↕ SQLite (WAL)   ↕ SIGUSR1 信号
-┌─────────────────────────────────────────────┐
-│                Core 进程                      │
-│  全量消息监听 → PluginManager → 告警发送      │
-└─────────────────────────────────────────────┘
-```
+全解耦插件架构 · 双进程分离 · 事件驱动同步
 
-## 核心特性
+[![Version](https://img.shields.io/badge/version-6.0.0-blue.svg)](https://github.com/chenmo8848/TG-Radar)
+[![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://python.org)
+[![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
-- **双进程架构**：Admin（命令 + 调度）与 Core（消息监听）完全独立
-- **全解耦插件系统**：命令、钩子、健康检查均通过插件注册
-- **完整插件生命周期**：发现 → 加载 → 运行 → 熔断 → 停用 → 重载
-- **单插件热重载**：`-reload 插件名` 只影响一个插件
-- **错误熔断**：插件连续失败 N 次后自动停用，修复后 `-reload` 恢复
-- **持久化插件状态**：启用/停用状态重启不丢失
-- **插件级配置**：每个插件可以有独立的配置项
-- **轻/重命令分离**：轻命令直接回复，重命令进入后台调度队列
+</div>
 
-## 快速开始
+---
+
+## 一键部署
 
 ```bash
-# 1. 克隆仓库
-git clone https://github.com/chenmo8848/TG-Radar.git
-cd TG-Radar
-
-# 2. 安装依赖
-pip install -r requirements.txt
-
-# 3. 配置
-cp config.example.json config.json
-# 编辑 config.json，填入 api_id 和 api_hash
-
-# 4. 首次授权
-python src/bootstrap_session.py
-
-# 5. 启动
-python src/radar_admin.py   # Admin 进程
-python src/radar_core.py    # Core 进程（另一个终端）
+bash <(curl -sL https://raw.githubusercontent.com/chenmo8848/TG-Radar/main/install.sh)
 ```
 
-## 插件管理命令
+> 在全新 VPS (Ubuntu/Debian) 上以 root 执行。脚本自动完成：安装依赖 → 拉取仓库 → 创建环境 → 写入配置 → Telegram 授权 → 首次同步 → 启动服务。
 
-| 命令 | 说明 |
-|------|------|
-| `-plugins` | 查看所有插件运行状态 |
-| `-reload <名称>` | 热重载单个插件 |
-| `-pluginreload` | 全量重载所有插件 |
-| `-pluginenable <名称>` | 启用已停用的插件 |
-| `-plugindisable <名称>` | 停用插件（持久化） |
-| `-pluginconfig <名称> [键] [值]` | 查看/修改插件配置 |
+---
 
-## v6.0.0 更新日志
+## 架构
 
-### 架构重建
-- 插件系统完全重建，支持 PagerMaid-Pyro 风格的全生命周期管理
-- 新增 `plugin_state` 数据库表，插件启停状态持久化
-- 新增错误熔断机制（连续失败自动停用）
-- 新增 `teardown()` 和 `register_cleanup()` 卸载钩子
-- 新增单插件热重载（`-reload 插件名`）
-- 新增插件级配置系统（`-pluginconfig`）
-- 新增 PLUGIN_META 标准（depends / conflicts / config_schema / min_core_version）
+```
+┌─────────────────────────┐    ┌─────────────────────────┐
+│      Admin 进程          │    │       Core 进程          │
+│                         │    │                         │
+│  收藏夹命令 → 插件分发   │    │  全量消息 → 插件钩子     │
+│  CommandBus → Scheduler  │    │  规则匹配 → 告警发送     │
+│  后台任务 → Executor     │    │                         │
+│                         │    │                         │
+│  单 TelegramClient      │    │  单 TelegramClient      │
+└────────┬────────────────┘    └────────┬────────────────┘
+         │                              │
+         └──────── SQLite WAL ──────────┘
+                  SIGUSR1 信号
+```
 
-### Bug 修复
-- **BUG-01**: 修复 SQLite 连接泄漏（所有只读方法现在正确关闭连接）
-- **BUG-02**: 修复 `upsert_folder` 对已存在行 enabled/alert 不更新的问题
-- **BUG-04**: 修复 `shlex.split` 未捕获引号异常导致的错误面板
-- **BUG-05**: 修复 `revision_poll_seconds=0` 时轮询无法关闭（改用 -1 禁用）
-- **BUG-06**: 修复 `apply_route_task` 创建分组后 DB 记录的 folder_id 不一致
-- **BUG-07**: 修复 config reload 后 executor/scheduler 持有过期引用
+**Admin** 处理命令交互与后台任务。**Core** 监听消息并发送告警。两个进程通过 SQLite 共享数据，通过 SIGUSR1 信号触发热重载。
 
-### 安全改进
-- **SEC-01**: `service_name_prefix` 增加正则校验，防止 shell 注入
-- **SEC-02**: `setprefix` 增加 HTML 特殊字符过滤
+---
 
-### 性能优化
-- **PERF-01/02**: 启动通知和状态面板使用批量 COUNT 查询替代 N+1
+## 核心设计
 
-### 健壮性
-- Core 进程启动时写入 PID 文件，reload 信号可精确定位
-- `apply_route_task` 增加操作间隔，减少 FloodWait 风险
-- 告警渲染函数从 `core_service.py` 移到 `telegram_utils.py`，插件不再依赖服务入口
+| 特性 | 实现 |
+|:-----|:-----|
+| **单 Client 模型** | Admin 只用一个 TelegramClient，杜绝双客户端竞争 |
+| **Plugin SDK** | 插件唯一入口 `from tgr.plugin_sdk import PluginContext` |
+| **文件级配置** | 每个插件独立 `configs/name.json`，可编辑可 Git 管理 |
+| **事件总线** | `ctx.emit()` / `ctx.on()` 实现插件间通信 |
+| **受控边界** | `ctx.db` / `ctx.ui` / `ctx.bus` 白名单方法 |
+| **独立日志** | 每个插件 `runtime/logs/plugins/name.log` |
+| **错误熔断** | 连续失败 N 次自动停用，`-reload` 恢复 |
+| **Session 自愈** | 损坏自动从 Core session 恢复 |
+| **并行钩子** | 消息钩子 `asyncio.gather` 并行执行 |
+| **懒加载优化** | 关键词匹配先检规则再调 API，99% 消息零开销跳过 |
+| **实时同步** | 监听 Telegram 分组变动事件，秒级增量同步 |
+
+---
 
 ## 目录结构
 
 ```
 TG-Radar/
-├── config.example.json
-├── requirements.txt
-├── src/
-│   ├── radar_admin.py          # Admin 入口
-│   ├── radar_core.py           # Core 入口
-│   ├── bootstrap_session.py    # 授权向导
-│   ├── sync_once.py            # 一次性同步
-│   └── tgr/
-│       ├── admin_service.py    # Admin 服务编排
-│       ├── core_service.py     # Core 服务编排
-│       ├── command_bus.py      # 命令总线
-│       ├── config.py           # 配置系统
-│       ├── compat.py           # 迁移兼容
-│       ├── db.py               # 数据库层
-│       ├── executors.py        # 任务执行器
-│       ├── logger.py           # 日志
-│       ├── scheduler.py        # 调度器
-│       ├── sync_logic.py       # 同步引擎
-│       ├── telegram_utils.py   # 工具函数
-│       ├── version.py          # 版本号
-│       ├── core/
-│       │   └── plugin_system.py  # 插件系统（核心）
-│       └── builtin_plugins/
-│           └── admin/
-│               └── system_panel.py  # 内置插件管理命令
-└── plugins-external/
-    └── TG-Radar-Plugins/       # 外部插件仓库
-        └── plugins/
-            ├── admin/           # Admin 插件
-            └── core/            # Core 插件
+├── config.json               核心配置（仅 10 项基础设施参数）
+├── configs/                   插件配置（每个插件一个 JSON）
+│   ├── general.json
+│   ├── routes.json
+│   └── keyword_monitor.json
+├── runtime/
+│   ├── radar.db               SQLite 数据库
+│   ├── sessions/              Telegram session
+│   └── logs/
+│       ├── admin.log
+│       ├── core.log
+│       └── plugins/           插件独立日志
+├── src/tgr/
+│   ├── plugin_sdk.py          ★ 插件唯一 import 入口
+│   ├── _plugin_exports.py     受控子接口
+│   ├── core/plugin_system.py  插件系统核心
+│   ├── admin_service.py       Admin 服务
+│   ├── core_service.py        Core 服务
+│   ├── config.py              配置系统
+│   ├── db.py                  数据层
+│   ├── command_bus.py         命令总线
+│   ├── scheduler.py           调度器
+│   ├── executors.py           任务执行器
+│   ├── sync_logic.py          同步引擎
+│   └── telegram_utils.py      工具函数
+└── plugins-external/          外部插件仓库
 ```
+
+---
+
+## 核心配置
+
+`config.json` 只保留基础设施参数，所有业务设置由插件各自管理：
+
+```json
+{
+    "api_id": 1234567,
+    "api_hash": "xxx",
+    "cmd_prefix": "-",
+    "service_name_prefix": "tg-radar",
+    "operation_mode": "stable",
+    "global_alert_channel_id": null,
+    "notify_channel_id": null,
+    "repo_url": "...",
+    "plugins_repo_url": "...",
+    "plugins_dir": "..."
+}
+```
+
+---
+
+## 插件 SDK
+
+插件通过 `ctx` 访问所有核心服务：
+
+```python
+from tgr.plugin_sdk import PluginContext
+
+def setup(ctx: PluginContext):
+    @ctx.command("mycommand", summary="描述", usage="mycommand", category="分类")
+    async def handler(app, event, args):
+        value = ctx.config.get("my_key")
+        ctx.log.info("执行命令")
+        await ctx.reply(event, ctx.ui.panel("标题", [ctx.ui.section("内容", [...])]))
+```
+
+| 接口 | 功能 |
+|:-----|:-----|
+| `ctx.config` | 读写插件配置 (`configs/name.json`) |
+| `ctx.db` | 白名单数据库方法 |
+| `ctx.ui` | HTML 渲染工具 |
+| `ctx.bus` | 提交后台任务 |
+| `ctx.log` | 插件独立日志 |
+| `ctx.client` | Telethon 客户端 |
+| `ctx.emit / ctx.on` | 事件总线 |
+| `ctx.reply` | 统一回复 |
+
+---
+
+## 终端管理
+
+```bash
+TR              # 交互菜单
+TR status       # 服务状态
+TR restart      # 重启双服务
+TR logs admin   # Admin 日志
+TR logs core    # Core 日志
+TR update       # 拉取更新并重启
+TR doctor       # 环境自检
+TR reauth       # 重新授权
+```
+
+## Telegram 命令
+
+在收藏夹发送，默认前缀 `-`：
+
+| 命令 | 功能 |
+|:-----|:-----|
+| `-help` | 命令列表 |
+| `-status` | 系统状态 |
+| `-plugins` | 插件状态 |
+| `-folders` | 分组列表 |
+| `-reload name` | 热重载插件 |
+| `-pluginconfig name` | 插件配置 |
+| `-sync` | 手动同步 |
+
+---
+
+## 同步机制
+
+三层保障确保分组数据实时：
+
+| 层 | 触发 | 延迟 |
+|:---|:-----|:-----|
+| **实时** | Telegram 分组变动事件 | 3 秒 |
+| **手动** | `-sync` 命令 | 即时 |
+| **定时** | 每日自动（可配置） | 最长 24h |
+
+---
+
+## 获取群 ID
+
+从任意群/频道**转发一条消息到收藏夹**，系统自动回复来源群的 ID、类型，以及快捷操作命令。
+
+---
+
+<div align="center">
+<sub>Built with Telethon · SQLite WAL · APScheduler</sub>
+</div>
