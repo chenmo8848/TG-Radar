@@ -235,8 +235,8 @@ class RadarDB:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+    def _connect(self, timeout: float = 30.0) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, timeout=float(timeout), isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -266,10 +266,10 @@ class RadarDB:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     @contextmanager
-    def tx(self) -> Iterator[sqlite3.Connection]:
-        conn = self._connect()
+    def tx(self, timeout: float = 30.0, immediate: bool = True) -> Iterator[sqlite3.Connection]:
+        conn = self._connect(timeout=timeout)
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             yield conn
             conn.commit()
         except Exception:
@@ -309,6 +309,17 @@ class RadarDB:
                 "INSERT INTO ops_log(level, action, detail, created_at) VALUES (?, ?, ?, ?)",
                 (level, action, detail[:2000], self._now()),
             )
+
+    def try_log_event(self, level: str, action: str, detail: str, timeout: float = 0.15) -> bool:
+        try:
+            with self.tx(timeout=timeout, immediate=False) as conn:
+                conn.execute(
+                    "INSERT INTO ops_log(level, action, detail, created_at) VALUES (?, ?, ?, ?)",
+                    (level, action, detail[:2000], self._now()),
+                )
+            return True
+        except sqlite3.OperationalError:
+            return False
 
     def recent_logs(self, limit: int = 20) -> list[sqlite3.Row]:
         with self._connect() as conn:
