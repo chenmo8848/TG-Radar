@@ -18,5 +18,5 @@
     "folder_rules": {},
     "_system_cache": {},
     "plugins_repo_url": "https://github.com/chenmo8848/TG-Radar-Plugins.git",
-    "plugins_dir": "../TG-Radar-Plugins"
+    "plugins_dir": "./plugins-external/TG-Radar-Plugins"
 }

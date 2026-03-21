@@ -23,7 +23,7 @@ PUBLIC_DEFAULT_CONFIG: dict[str, Any] = {
     "recycle_fallback_command_seconds": 8,
     "repo_url": "https://github.com/chenmo8848/TG-Radar.git",
     "plugins_repo_url": "https://github.com/chenmo8848/TG-Radar-Plugins.git",
-    "plugins_dir": "../TG-Radar-Plugins",
+    "plugins_dir": "./plugins-external/TG-Radar-Plugins",
     "auto_route_rules": {},
     "folder_rules": {},
     "_system_cache": {},

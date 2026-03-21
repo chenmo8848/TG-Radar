@@ -21,7 +21,7 @@ class PluginManager:
 
     @property
     def external_root(self) -> Path:
-        raw = getattr(self.config, "plugins_dir", None) or "../TG-Radar-Plugins"
+        raw = getattr(self.config, "plugins_dir", None) or "./plugins-external/TG-Radar-Plugins"
         root = Path(raw)
         if not root.is_absolute():
             root = (self.work_dir / root).resolve()
