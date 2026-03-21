@@ -263,9 +263,24 @@ class AdminApp:
             rr = (result.payload or {}).get("route_report")
             if rr:
                 await self.edit_message_by_id(rt, panel("TG-Radar · 归纳扫描完成", [section("结果", [bullet("新建", len(rr.created)), bullet("补群", sum(rr.queued.values())), bullet("错误", len(rr.errors))])]))
-        elif job.kind == "update_repo" and rt:
+        elif job.kind == "update_repo":
             ok = result.status == "done"
-            await self.edit_message_by_id(rt, panel("TG-Radar · 更新" + ("完成" if ok else "失败"), [section("输出", [blockquote_preview(result.detail or result.summary, 1400)])], f"<i>如需生效请执行 <code>{escape(self.config.cmd_prefix)}restart</code></i>" if ok else None))
+            changed = (result.payload or {}).get("changed_plugins", [])
+            reload_results = []
+            if ok and changed:
+                for name in changed:
+                    rok, rmsg = self.plugin_manager.reload_plugin(name)
+                    reload_results.append(f"{'✔' if rok else '✖'} {name}: {rmsg}")
+                self.logger.info("自动重载 %d 个插件: %s", len(changed), changed)
+            detail_text = blockquote_preview(result.detail or result.summary, 1000)
+            secs = [section("拉取结果", [detail_text])]
+            if reload_results:
+                secs.append(section(f"自动重载 ({len(changed)} 个插件)", reload_results))
+            elif ok:
+                secs.append(section("插件", ["无变更，无需重载。"]))
+            footer = f"<i>如需重载核心代码请执行 <code>{escape(self.config.cmd_prefix)}restart</code></i>" if ok else None
+            if rt:
+                await self.edit_message_by_id(rt, panel("TG-Radar · 更新" + ("完成" if ok else "失败"), secs, footer))
         elif job.kind == "restart_services" and rt:
             await self.edit_message_by_id(rt, panel("TG-Radar · 即将重启", [section("说明", ["重启指令已下发，服务会自动拉起。"])]))
 
