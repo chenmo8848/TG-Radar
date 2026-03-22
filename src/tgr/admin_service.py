@@ -110,9 +110,15 @@ class AdminApp:
                     loop.add_signal_handler(sig, self.stop_event.set)
                 except NotImplementedError:
                     pass
-
+                    async def _keepalive():
+                while not self.stop_event.is_set():
+                    try:
+                        await asyncio.sleep(300)
+                        await client.get_me()
+                    except Exception:
+                        pass
             self.scheduler = AdminScheduler(self)
-            tasks = [asyncio.create_task(self.scheduler.run()), asyncio.create_task(client.run_until_disconnected()), asyncio.create_task(self.stop_event.wait())]
+            tasks = [asyncio.create_task(self.scheduler.run()), asyncio.create_task(client.run_until_disconnected()), asyncio.create_task(self.stop_event.wait()), asyncio.create_task(_keepalive())]
             _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             self.stop_event.set()
             for t in pending:
